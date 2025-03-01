@@ -30,7 +30,7 @@ def transcribe_audio(audio_file_path, response_format="verbose_json"):
 if __name__ == "__main__":
     # Use a path relative to the backend directory
     backend_dir = os.path.dirname(os.path.dirname(__file__))
-    filename = os.path.join(backend_dir, "audio", "speech", "output.mp3")
+    filename = os.path.join(backend_dir, "assets", "audio", "speech", "output.mp3")
     
     result = transcribe_audio(filename)
     print(result)

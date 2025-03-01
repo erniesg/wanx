@@ -37,7 +37,7 @@ def text_to_speech(text, output_filename="output.mp3"):
     
     # Create the audio directory if it doesn't exist
     backend_dir = os.path.dirname(os.path.dirname(__file__))
-    audio_dir = os.path.join(backend_dir, "audio", "speech")
+    audio_dir = os.path.join(backend_dir,"assets", "audio", "speech")
     os.makedirs(audio_dir, exist_ok=True)
     
     # Set the full output path

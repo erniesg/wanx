@@ -19,7 +19,8 @@ def text_to_video(prompt, output_filename=None):
         # If no output filename is provided, create one based on the prompt
         if output_filename is None:
             # Create videos directory in backend/assets
-            videos_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)),  "videos")
+            backend_dir = os.path.dirname(os.path.dirname(__file__))
+            videos_dir = os.path.join(backend_dir, "assets", "videos")
             os.makedirs(videos_dir, exist_ok=True)
             
             # Create a filename from the first few words of the prompt

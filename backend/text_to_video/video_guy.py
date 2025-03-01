@@ -48,7 +48,7 @@ def generate_videos(prompts: List[str], project_name: str = "output"):
     
     # Create videos directory in backend/assets
     backend_dir = os.path.dirname(os.path.dirname(__file__))
-    videos_dir = os.path.join(backend_dir,  "videos", project_name)
+    videos_dir = os.path.join(backend_dir,  "assets", "videos", project_name)
     os.makedirs(videos_dir, exist_ok=True)
     
     for prompt in prompts:

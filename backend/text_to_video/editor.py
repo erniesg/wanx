@@ -74,13 +74,13 @@ def combine_project(project_name, output_dir=None):
         backend_dir = os.path.dirname(os.path.dirname(__file__))
         
         # Find the audio file
-        audio_file = os.path.join(backend_dir, "audio", "speech", f"{project_name}.mp3")
+        audio_file = os.path.join(backend_dir, "assets", "audio", "speech", f"{project_name}.mp3")
         if not os.path.exists(audio_file):
             print(f"Audio file not found: {audio_file}")
             return None
             
         # Get all video files in the project directory
-        video_dir = os.path.join(backend_dir, "videos", project_name)
+        video_dir = os.path.join(backend_dir, "assets", "videos", project_name)
         if not os.path.exists(video_dir):
             print(f"Video directory not found: {video_dir}")
             return None
