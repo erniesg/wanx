@@ -9,3 +9,4 @@ instructor==1.7.2
 pydub
 moviepy==1.0.3
 anthropic==0.49.0
+captacity

@@ -40,7 +40,17 @@ def sanitize_project_name(name):
     return sanitized
 
 def create_tiktok(content, log_callback=None):
-    # Add logging at key points
+    """
+    Create a TikTok video from content with progress updates via callback.
+
+    Args:
+        content (str): The content to create a video from
+        log_callback (callable, optional): Function to call with status updates
+
+    Returns:
+        str: Path to the final video
+    """
+    # Send initial status
     if log_callback:
         log_callback("Starting to process content...")
 
@@ -54,9 +64,14 @@ def create_tiktok(content, log_callback=None):
     os.makedirs(audio_dir, exist_ok=True)
     os.makedirs(videos_dir, exist_ok=True)
 
+    if log_callback:
+        log_callback("Transforming content to script...")
+
     script = transform_to_script(content)
     if not script:
         logger.error("Failed to transform content to script")
+        if log_callback:
+            log_callback("Error: Failed to transform content to script")
         return None
 
     # Generate video prompts - sanitize project name
@@ -65,7 +80,7 @@ def create_tiktok(content, log_callback=None):
     logger.info(f"Project name: {project_name}")
 
     if log_callback:
-        log_callback("Generating audio...")
+        log_callback("Generating audio from script...")
 
     # Generate audio from text
     logger.info("Generating speech from text")
@@ -73,6 +88,8 @@ def create_tiktok(content, log_callback=None):
 
     if not audio_path or not os.path.exists(audio_path):
         logger.error(f"Failed to create audio file: {audio_file}")
+        if log_callback:
+            log_callback("Error: Failed to create audio file")
         return None
 
     logger.info(f"Audio saved to {audio_path}")
@@ -83,12 +100,17 @@ def create_tiktok(content, log_callback=None):
     if audio_length is None:
         logger.error("Failed to get audio length, using default length of 30 seconds")
         audio_length = 30  # Default to 30 seconds if we can't determine length
+        if log_callback:
+            log_callback("Warning: Using default audio length of 30 seconds")
 
     logger.info(f"Audio length: {audio_length} seconds")
 
     # Calculate number of videos needed
     num_videos = max(1, int(audio_length / 6))
     logger.info(f"Generating {num_videos} videos (6 seconds each)")
+
+    if log_callback:
+        log_callback(f"Creating {num_videos} video segments...")
 
     # Generate video prompts and create videos
     logger.info("Creating video content prompts")
@@ -101,26 +123,48 @@ def create_tiktok(content, log_callback=None):
     # Check if project_name is None
     if project_name is None:
         logger.error("Failed to create video content")
+        if log_callback:
+            log_callback("Error: Failed to create video content")
         return None
 
     # Combine audio and videos
+    if log_callback:
+        log_callback("Combining audio and videos...")
+
     output_file = f"{project_name}_tiktok.mp4"
     logger.info(f"Combining audio and videos into {output_file}")
     final_video = combine_project(project_name)
 
-    if final_video:
+    if not final_video or not os.path.exists(final_video):
+        logger.error("Failed to create TikTok video")
+        if log_callback:
+            log_callback("Error: Failed to create final video")
+        return None
+
+    try:
         # Add captions to the final video
+        if log_callback:
+            log_callback("Adding captions to video...")
+
         logger.info(f"Adding captions to the video")
         captioned_video = add_bottom_captions(final_video)
+
+        if not captioned_video or not os.path.exists(captioned_video):
+            logger.warning("Failed to add captions, returning uncaptioned video")
+            if log_callback:
+                log_callback("Warning: Failed to add captions, using uncaptioned video")
+            return final_video
+
         logger.info(f"TikTok video with captions created: {captioned_video}")
+        if log_callback:
+            log_callback("Video creation complete!")
         return captioned_video
-    else:
-        logger.error("Failed to create TikTok video")
-
-    if log_callback:
-        log_callback("Creating video...")
-
-    return final_video
+    except Exception as e:
+        logger.error(f"Error adding captions: {str(e)}")
+        logger.info("Returning video without captions")
+        if log_callback:
+            log_callback(f"Warning: Error adding captions: {str(e)}")
+        return final_video
 
 
 if __name__ == "__main__":
