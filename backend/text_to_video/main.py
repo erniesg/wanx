@@ -26,6 +26,28 @@ app.add_middleware(
 active_jobs: Dict[str, List[str]] = {}
 job_results: Dict[str, str] = {}
 
+# Add this at the beginning of the file, after imports
+# Ensure all necessary directories exist
+def ensure_directories():
+    """Create all necessary directories for the application"""
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    assets_dir = os.path.join(backend_dir, "assets")
+
+    # Create directory structure
+    directories = [
+        os.path.join(assets_dir, "audio", "speech"),
+        os.path.join(assets_dir, "videos"),
+        os.path.join(backend_dir, "logs")
+    ]
+
+    for directory in directories:
+        os.makedirs(directory, exist_ok=True)
+
+    return backend_dir, assets_dir
+
+# Call this function to ensure directories exist
+backend_dir, assets_dir = ensure_directories()
+
 class VideoRequest(BaseModel):
     content: str
 
@@ -152,6 +174,12 @@ async def job_status(job_id: str):
         "logs": active_jobs[job_id],
         "video_path": job_results.get(job_id) if is_complete else None
     }
+
+# Add this to the startup event
+@app.on_event("startup")
+async def startup_event():
+    """Run when the application starts"""
+    ensure_directories()
 
 if __name__ == "__main__":
     import uvicorn

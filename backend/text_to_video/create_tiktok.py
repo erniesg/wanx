@@ -56,10 +56,11 @@ def create_tiktok(content, log_callback=None):
 
     logger.info("Starting TikTok creation process")
 
-    # Create necessary directories
+    # Create necessary directories with consistent paths
     backend_dir = os.path.dirname(os.path.dirname(__file__))
-    audio_dir = os.path.join(backend_dir, "audio", "speech")
-    videos_dir = os.path.join(backend_dir, "videos")
+    assets_dir = os.path.join(backend_dir, "assets")
+    audio_dir = os.path.join(assets_dir, "audio", "speech")
+    videos_dir = os.path.join(assets_dir, "videos")
 
     os.makedirs(audio_dir, exist_ok=True)
     os.makedirs(videos_dir, exist_ok=True)
@@ -133,7 +134,9 @@ def create_tiktok(content, log_callback=None):
 
     output_file = f"{project_name}_tiktok.mp4"
     logger.info(f"Combining audio and videos into {output_file}")
-    final_video = combine_project(project_name)
+
+    # Pass the full audio_path to combine_project
+    final_video = combine_project(project_name, audio_path=audio_path)
 
     if not final_video or not os.path.exists(final_video):
         logger.error("Failed to create TikTok video")

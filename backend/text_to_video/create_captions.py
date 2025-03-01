@@ -1,6 +1,7 @@
 import captacity
 import os
 import logging
+from moviepy.editor import VideoFileClip, AudioFileClip
 
 logger = logging.getLogger("TikTokCreator")
 
@@ -25,6 +26,23 @@ def add_bottom_captions(video_file, output_file=None):
         output_file = f"{name_parts[0]}_captioned.{name_parts[1]}" if len(name_parts) > 1 else f"{video_file}_captioned"
 
     try:
+        # Extract audio from original video before adding captions
+        logger.info(f"Extracting audio from original video: {video_file}")
+        original_video = VideoFileClip(video_file)
+        original_audio = original_video.audio
+
+        # If the original video has no audio, log a warning
+        if original_audio is None:
+            logger.warning(f"Original video has no audio track: {video_file}")
+            original_video.close()
+            return None
+
+        # Create a temporary audio file
+        temp_audio_file = f"{name_parts[0]}_temp_audio.mp3"
+        original_audio.write_audiofile(temp_audio_file)
+        original_video.close()
+
+        # Add captions to the video
         captacity.add_captions(
             video_file=video_file,
             output_file=output_file,
@@ -44,6 +62,31 @@ def add_bottom_captions(video_file, output_file=None):
 
         if os.path.exists(output_file):
             logger.info(f"Successfully added captions to video: {output_file}")
+
+            # Now add the original audio back to the captioned video
+            logger.info(f"Adding original audio back to captioned video")
+            captioned_video = VideoFileClip(output_file)
+            audio_clip = AudioFileClip(temp_audio_file)
+
+            # Set the audio to the captioned video
+            final_video = captioned_video.set_audio(audio_clip)
+
+            # Save the final video with audio
+            temp_output = f"{name_parts[0]}_with_audio.{name_parts[1]}"
+            final_video.write_videofile(temp_output, codec="libx264", audio_codec="aac")
+
+            # Close clips to free resources
+            captioned_video.close()
+            audio_clip.close()
+            final_video.close()
+
+            # Replace the captioned file with the one that has audio
+            os.replace(temp_output, output_file)
+
+            # Clean up temporary audio file
+            if os.path.exists(temp_audio_file):
+                os.remove(temp_audio_file)
+
             return output_file
         else:
             logger.error(f"Caption generation completed but output file not found: {output_file}")
@@ -51,4 +94,8 @@ def add_bottom_captions(video_file, output_file=None):
 
     except Exception as e:
         logger.error(f"Error adding captions: {str(e)}")
+        # Clean up any temporary files if they exist
+        temp_audio_file = f"{name_parts[0]}_temp_audio.mp3"
+        if os.path.exists(temp_audio_file):
+            os.remove(temp_audio_file)
         return None
