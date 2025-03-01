@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AppState, Scene, GlobalSettings } from '../types';
+import { AppState, Scene, GlobalSettings, ProcessingStatus } from '../types';
 
 const generateId = () => Math.random().toString(36).substring(2, 9);
 
@@ -35,13 +35,6 @@ const scene1Prompt = "High-tech concept animation, the title \"TECH INDUSTRY UPD
 const scene2Prompt = "In a high-rise office, three blurry silhouettes stand in front of a large French window, with the evening city skyline and dim sky in the background. In the foreground are scattered documents and contracts, with some words such as \"technology transfer\", \"regulations\" and \"export control\" briefly highlighted. The camera switches back and forth between the documents and the figures in front of the window, and the window glass reflects data streams and news headlines. Above the documents are blurred ID photos of the three people, surrounded by technical diagrams and legal seals. The overall color tone is blue-gray, with warm orange tones, creating a mysterious and serious atmosphere.";
 
 const scene3Prompt = "Close-up: A computer screen in 2025, with a blurred background of a nighttime city and an aerial view of a port container terminal, in warm amber tones. The screen slowly zooms out to reveal more screen details, with \"READ MORE\" and \"IN BIO\" buttons at the bottom, slightly glowing. Data visualizations flow across the screen, representing global trade routes and connections. Text and images in a browser window move slightly, suggesting news content that is updated in real time. The screen reflects the soft lighting of the keyboard and the outline of the user. The overall atmosphere is professional and mysterious, suggesting that deep content is waiting to be explored.";
-
-// API endpoints for live mode
-const API_ENDPOINTS = {
-  GENERATE_SCRIPT: 'https://api.wanx.io/generate/script',
-  GENERATE_VIDEO: 'https://api.wanx.io/generate/video',
-  PUBLISH_TIKTOK: 'https://api.wanx.io/publish/tiktok'
-};
 
 // Default URL for demo mode
 const DEFAULT_DEMO_URL = "https://www.techinasia.com/news/sg-charges-people-fraud-nvidia-chip-export-case";
@@ -191,6 +184,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setInputValue: (value) => {
     set({ inputValue: value });
+  },
+  
+  setProcessingStatus: (status) => {
+    set({ processingStatus: status });
   },
 
   startGeneration: () => {

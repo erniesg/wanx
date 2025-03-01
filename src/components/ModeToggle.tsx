@@ -1,7 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { useAppStore } from '../store';
-import { Zap } from 'lucide-react';
+import { Zap, Sparkles } from 'lucide-react';
 
 const ModeToggle: React.FC = () => {
   const { isLiveMode, toggleLiveMode } = useAppStore();
@@ -14,7 +14,7 @@ const ModeToggle: React.FC = () => {
         title={isLiveMode ? "Switch to Demo Mode" : "Switch to Live Mode"}
       >
         <span className="text-xs font-medium">
-          {isLiveMode ? 'Live!' : 'Demo'}
+          {isLiveMode ? 'Live Mode' : 'Demo Mode'}
         </span>
         
         {isLiveMode ? (
@@ -33,7 +33,7 @@ const ModeToggle: React.FC = () => {
             ></motion.div>
           </motion.div>
         ) : (
-          <Zap size={14} className="text-gray-400" />
+          <Sparkles size={14} className="text-gray-400" />
         )}
       </button>
     </div>

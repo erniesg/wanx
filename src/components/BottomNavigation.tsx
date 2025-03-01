@@ -2,17 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, RefreshCw, Video } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAppStore } from '../store';
+import { useVideoGeneration } from '../hooks/useVideoGeneration';
 
 const BottomNavigation: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
-  const { generateVideo, setCurrentPage, isLiveMode } = useAppStore();
+  const { setCurrentPage, isLiveMode } = useAppStore();
+  const { generateVideo } = useVideoGeneration();
 
   const handleGenerateVideo = () => {
     setIsGenerating(true);
     // In a real app, this would trigger the video generation process
-    setTimeout(() => {
+    setTimeout(async () => {
+      await generateVideo();
       setIsGenerating(false);
-      generateVideo();
     }, 1000);
   };
 
@@ -99,6 +101,13 @@ const BottomNavigation: React.FC = () => {
           {isGenerating ? "Generating..." : "Generate Video"}
         </motion.button>
       </div>
+      
+      {isLiveMode && (
+        <div className="absolute -top-4 right-4 bg-green-900 text-green-300 text-xs px-2 py-1 rounded-full flex items-center">
+          <div className="live-indicator mr-1"></div>
+          Live Mode
+        </div>
+      )}
     </div>
   );
 };

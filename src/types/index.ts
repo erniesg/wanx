@@ -25,6 +25,12 @@ export interface GlobalSettings {
   style: string;
 }
 
+export interface ProcessingStatus {
+  step: 'analyzing' | 'generating' | 'rendering' | 'complete';
+  progress: number;
+  message: string;
+}
+
 export interface AppState {
   globalSettings: GlobalSettings;
   scenes: Scene[];
@@ -35,11 +41,7 @@ export interface AppState {
   currentPage: 'landing' | 'script' | 'processing' | 'completion';
   inputType: 'url' | 'text';
   inputValue: string;
-  processingStatus: {
-    step: 'analyzing' | 'generating' | 'rendering' | 'complete';
-    progress: number;
-    message: string;
-  };
+  processingStatus: ProcessingStatus;
   videoUrl: string;
   
   // Mode settings
@@ -58,6 +60,7 @@ export interface AppState {
   setCurrentPage: (page: 'landing' | 'script' | 'processing' | 'completion') => void;
   setInputType: (type: 'url' | 'text') => void;
   setInputValue: (value: string) => void;
+  setProcessingStatus: (status: ProcessingStatus) => void;
   startGeneration: () => void;
   generateVideo: () => void;
   publishToTikTok: () => Promise<boolean>;

@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../store';
 import { motion } from 'framer-motion';
 import { Link, FileText, ArrowRight, Sparkles, Zap, Sliders } from 'lucide-react';
 import PageHeader from './PageHeader';
 import Footer from './Footer';
+import { useVideoGeneration } from '../hooks/useVideoGeneration';
 
 const LandingPage: React.FC = () => {
   const { inputType, setInputType, inputValue, setInputValue, startGeneration, isLiveMode } = useAppStore();
@@ -12,6 +13,8 @@ const LandingPage: React.FC = () => {
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationMessage, setGenerationMessage] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
+  const logContainerRef = useRef<HTMLDivElement>(null);
+  const { generateVideo } = useVideoGeneration();
 
   // Log mode changes for debugging
   useEffect(() => {
@@ -29,6 +32,13 @@ const LandingPage: React.FC = () => {
     }
   }, [isLiveMode, setInputValue]);
 
+  // Auto-scroll logs to bottom
+  useEffect(() => {
+    if (logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs]);
+
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const value = e.target.value;
     setInputValue(value);
@@ -38,8 +48,14 @@ const LandingPage: React.FC = () => {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isInputValid) {
-      setIsGenerating(true);
-      simulateGeneration();
+      if (isLiveMode) {
+        // In live mode, go directly to script generation
+        startGeneration();
+      } else {
+        // In demo mode, show the analysis animation first
+        setIsGenerating(true);
+        simulateGeneration();
+      }
     }
   };
 
@@ -275,6 +291,7 @@ const LandingPage: React.FC = () => {
               </div>
               
               <div 
+                ref={logContainerRef}
                 className="bg-background-dark p-4 rounded-sm h-60 overflow-y-auto font-mono text-sm"
               >
                 {logs.map((log, index) => (

@@ -1,17 +1,30 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAppStore } from '../store';
 import { motion } from 'framer-motion';
 import PageHeader from './PageHeader';
 import Footer from './Footer';
+import { useLiveVideoGeneration } from '../hooks/useLiveVideoGeneration';
 
 const ProcessingPage: React.FC = () => {
   const { processingStatus, isLiveMode } = useAppStore();
   const { step, progress, message } = processingStatus;
   const [logs, setLogs] = useState<string[]>([]);
   const logContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Get live logs if in live mode
+  const { logs: liveLogs, isWebSocketConnected } = useLiveVideoGeneration();
 
-  // Simulated log messages
+  // Use live logs if in live mode
   useEffect(() => {
+    if (isLiveMode && liveLogs.length > 0) {
+      setLogs(liveLogs);
+    }
+  }, [isLiveMode, liveLogs]);
+
+  // Simulated log messages for demo mode
+  useEffect(() => {
+    if (isLiveMode) return; // Skip if in live mode
+    
     const demoLogMessages = [
       "Initializing video generation process...",
       "Analyzing content structure...",
@@ -33,37 +46,18 @@ const ProcessingPage: React.FC = () => {
       "Preparing final output..."
     ];
 
-    const liveLogMessages = [
-      "Connecting to AI video generation service...",
-      "Authenticating connection...",
-      "Sending script data to API...",
-      "API received request, processing...",
-      "Initializing AI model for video generation...",
-      "Loading scene generation parameters...",
-      "AI generating visual concepts for scene 1...",
-      "Applying style transfer to generated frames...",
-      "Processing scene transitions...",
-      "Rendering video frames with GPU acceleration...",
-      "Applying motion effects to scene elements...",
-      "Generating audio track from script...",
-      "Synchronizing audio with visual elements...",
-      "Optimizing video for TikTok platform...",
-      "Applying final compression and encoding...",
-      "Preparing to deliver completed video..."
-    ];
+    console.log(`[ProcessingPage] Using DEMO mode logs`);
 
-    const logMessages = isLiveMode ? liveLogMessages : demoLogMessages;
-    console.log(`[ProcessingPage] Using ${isLiveMode ? 'LIVE' : 'DEMO'} mode logs`);
-
+    // Clear logs when mode changes
+    setLogs([]);
+    
     const addLogMessage = (index: number) => {
-      if (index < logMessages.length) {
-        setLogs(prev => [...prev, logMessages[index]]);
+      if (index < demoLogMessages.length) {
+        setLogs(prev => [...prev, demoLogMessages[index]]);
         setTimeout(() => addLogMessage(index + 1), Math.random() * 2000 + 1000);
       }
     };
 
-    // Clear logs when mode changes
-    setLogs([]);
     addLogMessage(0);
   }, [isLiveMode]);
 
@@ -149,10 +143,15 @@ const ProcessingPage: React.FC = () => {
             <div className="scanline"></div>
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-orbitron text-secondary-cyan">Log</h2>
-              <div className="flex items-center">
+              <div className="flex items-center space-x-3">
                 <span className={`text-xs px-2 py-1 rounded-full ${isLiveMode ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-300'}`}>
                   {isLiveMode ? 'Live Mode' : 'Demo Mode'}
                 </span>
+                {isLiveMode && (
+                  <span className={`text-xs px-2 py-1 rounded-full ${isWebSocketConnected ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>
+                    {isWebSocketConnected ? 'WebSocket Connected' : 'Polling Fallback'}
+                  </span>
+                )}
               </div>
             </div>
             
@@ -166,6 +165,9 @@ const ProcessingPage: React.FC = () => {
                   {log}
                 </div>
               ))}
+              {logs.length === 0 && (
+                <div className="text-gray-500 italic">Initializing process...</div>
+              )}
             </div>
           </div>
         </motion.div>

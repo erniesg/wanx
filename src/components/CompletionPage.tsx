@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { useAppStore } from '../store';
 import { motion } from 'framer-motion';
-import { Download, Home } from 'lucide-react';
+import { Download, Home, Share2 } from 'lucide-react';
 import PageHeader from './PageHeader';
 import Footer from './Footer';
+import { useVideoGeneration } from '../hooks/useVideoGeneration';
 
 const CompletionPage: React.FC = () => {
   const { videoUrl, processingStatus, publishToTikTok, setCurrentPage, isLiveMode } = useAppStore();
   const [isPublishing, setIsPublishing] = useState(false);
   const [isPublished, setIsPublished] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const { downloadVideo } = useVideoGeneration();
 
   // Log mode for debugging
   useEffect(() => {
@@ -37,17 +39,24 @@ const CompletionPage: React.FC = () => {
   };
 
   const handleDownload = () => {
-    // Create an anchor element and trigger download
-    const downloadLink = document.createElement('a');
-    downloadLink.href = "https://github.com/erniesg/wanx/raw/refs/heads/main/backend/assets/demo/output.mp4";
-    downloadLink.download = "tech_industry_update.mp4";
-    document.body.appendChild(downloadLink);
-    downloadLink.click();
-    document.body.removeChild(downloadLink);
+    downloadVideo();
   };
 
   const handleGoHome = () => {
     setCurrentPage('landing');
+  };
+
+  const handleShare = () => {
+    if (navigator.share) {
+      navigator.share({
+        title: 'Check out my AI-generated TikTok video!',
+        text: 'I created this video using 万象更新 Everything Has Changed.',
+        url: window.location.href,
+      })
+      .catch((error) => console.log('Error sharing:', error));
+    } else {
+      alert('Web Share API not supported in your browser. Copy the URL to share manually.');
+    }
   };
 
   return (
@@ -98,7 +107,7 @@ const CompletionPage: React.FC = () => {
             <div className="flex flex-col md:flex-row items-center gap-6">
               <div className="video-player md:w-1/3 w-full aspect-[9/16] mx-auto">
                 <video 
-                  src="https://github.com/erniesg/wanx/raw/refs/heads/main/backend/assets/demo/output.mp4" 
+                  src={videoUrl}
                   controls 
                   className="w-full h-full object-cover"
                   autoPlay
@@ -117,13 +126,23 @@ const CompletionPage: React.FC = () => {
                 </div>
                 
                 <div className="flex flex-col space-y-4">
-                  <button 
-                    className="neon-button flex items-center justify-center"
-                    onClick={handleDownload}
-                  >
-                    <Download size={16} className="mr-2" />
-                    Download Video
-                  </button>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button 
+                      className="neon-button flex items-center justify-center"
+                      onClick={handleDownload}
+                    >
+                      <Download size={16} className="mr-2" />
+                      Download Video
+                    </button>
+                    
+                    <button 
+                      className="neon-button flex items-center justify-center"
+                      onClick={handleShare}
+                    >
+                      <Share2 size={16} className="mr-2" />
+                      Share
+                    </button>
+                  </div>
                   
                   <motion.button 
                     className="neon-button primary flex items-center justify-center relative overflow-visible"
