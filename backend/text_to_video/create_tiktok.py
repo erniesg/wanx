@@ -2,37 +2,80 @@ import logging
 from editor import combine_audio_video, combine_project
 from utils import get_audio_length
 from video_guy import create_video_content, generate_videos
-from tts import text_to_speech
+from tts import text_to_speech,  sanitize_filename
 import os
+import re
 from generate_script import transform_to_script
+
 # Configure logging
+# Create logs directory in backend
+backend_dir = os.path.dirname(os.path.dirname(__file__))
+log_dir = os.path.join(backend_dir, "logs")
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "tiktok_creation.log")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("tiktok_creation.log"),
+        logging.FileHandler(log_file),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("TikTokCreator")
 
+def sanitize_project_name(name):
+    """
+    Sanitize a project name by removing spaces and special characters.
+    
+    Args:
+        name (str): The project name to sanitize
+        
+    Returns:
+        str: Sanitized project name
+    """
+    # Replace spaces with underscores and remove special characters
+    sanitized = re.sub(r'[^\w\-_.]', '_', name.replace(' ', '_'))
+    return sanitized
+
 def create_tiktok(content: str):
     logger.info("Starting TikTok creation process")
     
-    script = transform_to_script(content)
+    # Create necessary directories
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    audio_dir = os.path.join(backend_dir, "audio", "speech")
+    videos_dir = os.path.join(backend_dir, "videos")
     
-    # Generate video prompts
-    project_name = content[:10]
+    os.makedirs(audio_dir, exist_ok=True)
+    os.makedirs(videos_dir, exist_ok=True)
+    
+    script = transform_to_script(content)
+    if not script:
+        logger.error("Failed to transform content to script")
+        return None
+    
+    # Generate video prompts - sanitize project name
+    project_name = sanitize_project_name(content[:10])
     audio_file = f"{project_name}.mp3"
     logger.info(f"Project name: {project_name}")
     
     # Generate audio from text
     logger.info("Generating speech from text")
-    text_to_speech(script, audio_file)
-    logger.info(f"Audio saved to {audio_file}")
+    audio_path = text_to_speech(script, audio_file)
+    
+    if not audio_path or not os.path.exists(audio_path):
+        logger.error(f"Failed to create audio file: {audio_file}")
+        return None
+        
+    logger.info(f"Audio saved to {audio_path}")
     
     # Get audio length
-    audio_length = get_audio_length(f"audio/speech/{audio_file}")
+    audio_length = get_audio_length(audio_path)
+    
+    if audio_length is None:
+        logger.error("Failed to get audio length, using default length of 30 seconds")
+        audio_length = 30  # Default to 30 seconds if we can't determine length
+    
     logger.info(f"Audio length: {audio_length} seconds")
     
     # Calculate number of videos needed
@@ -41,7 +84,10 @@ def create_tiktok(content: str):
     
     # Generate video prompts and create videos
     logger.info("Creating video content prompts")
-    os.makedirs(f"videos/{project_name}", exist_ok=True)
+    # Create videos directory for this project
+    project_videos_dir = os.path.join(videos_dir, project_name)
+    os.makedirs(project_videos_dir, exist_ok=True)
+    
     project_name = create_video_content(content, num_videos=num_videos, project_name=project_name)
     
     # Check if project_name is None

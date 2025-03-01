@@ -1,0 +1,10 @@
+fastapi==0.104.1
+uvicorn==0.23.2
+pydantic==2.4.2 
+jigsawstack==0.1.28
+replicate 
+python-dotenv
+groq
+instructor
+pydub
+moviepy==1.0.3

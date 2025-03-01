@@ -1,13 +1,12 @@
 import os
 from groq import Groq
 
-def transcribe_audio(audio_file_path,  response_format="verbose_json"):
+def transcribe_audio(audio_file_path, response_format="verbose_json"):
     """
     Transcribe audio file to text using Groq's Whisper model.
     
     Args:
         audio_file_path (str): Path to the audio file
-        prompt (str, optional): Optional prompt to guide transcription
         response_format (str): Format of the response (default: verbose_json)
         
     Returns:
@@ -29,6 +28,9 @@ def transcribe_audio(audio_file_path,  response_format="verbose_json"):
 
 # Example usage
 if __name__ == "__main__":
-    filename = os.path.dirname(__file__) + "/audio/speech/output.mp3"
+    # Use a path relative to the backend directory
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    filename = os.path.join(backend_dir, "audio", "speech", "output.mp3")
+    
     result = transcribe_audio(filename)
     print(result)
