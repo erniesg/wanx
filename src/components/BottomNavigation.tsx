@@ -9,13 +9,15 @@ const BottomNavigation: React.FC = () => {
   const { setCurrentPage, isLiveMode } = useAppStore();
   const { generateVideo } = useVideoGeneration();
 
-  const handleGenerateVideo = () => {
+  const handleGenerateVideo = async () => {
     setIsGenerating(true);
-    // In a real app, this would trigger the video generation process
-    setTimeout(async () => {
+    try {
       await generateVideo();
+    } catch (error) {
+      console.error('Error generating video:', error);
+    } finally {
       setIsGenerating(false);
-    }, 1000);
+    }
   };
 
   const handleBack = () => {
