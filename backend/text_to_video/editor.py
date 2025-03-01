@@ -70,14 +70,17 @@ def combine_project(project_name, output_dir=None):
         str: Path to the final video file
     """
     try:
+        # Set base paths relative to the backend directory
+        backend_dir = os.path.dirname(os.path.dirname(__file__))
+        
         # Find the audio file
-        audio_file = f"audio/speech/{project_name}.mp3"
+        audio_file = os.path.join(backend_dir, "audio", "speech", f"{project_name}.mp3")
         if not os.path.exists(audio_file):
             print(f"Audio file not found: {audio_file}")
             return None
             
         # Get all video files in the project directory
-        video_dir = f"videos/{project_name}"
+        video_dir = os.path.join(backend_dir, "videos", project_name)
         if not os.path.exists(video_dir):
             print(f"Video directory not found: {video_dir}")
             return None
@@ -96,9 +99,9 @@ def combine_project(project_name, output_dir=None):
         # Set output file path
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            output_file = f"{output_dir}/{project_name}_final.mp4"
+            output_file = os.path.join(output_dir, f"{project_name}_final.mp4")
         else:
-            output_file = f"{video_dir}/{project_name}_final.mp4"
+            output_file = os.path.join(video_dir, f"{project_name}_final.mp4")
             
         # Combine audio and videos
         result = combine_audio_video(audio_file, video_files, output_file)

@@ -1,5 +1,6 @@
 from pydub import AudioSegment
 import logging
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,8 +27,9 @@ def get_audio_length(audio_file_path):
         return None
     
 if __name__ == "__main__":
-    # Specify the audio file path directly
-    audio_file = "/Users/techinasia/text-to-shorts/audio/speech/Tesla shar.mp3"  # Replace with your actual file path
+    # Use a relative path for testing
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    audio_file = os.path.join(backend_dir, "audio", "speech", "test_audio.mp3")
     
     logger.info(f"Checking audio length for: {audio_file}")
     duration = get_audio_length(audio_file)

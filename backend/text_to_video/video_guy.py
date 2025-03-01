@@ -32,7 +32,6 @@ def generate_video_prompts(script: str, num_videos: int = 3):
                 }
             ],
             stop=None,
-
             response_model=Videos
         )
         
@@ -46,8 +45,14 @@ def generate_video_prompts(script: str, num_videos: int = 3):
     
 def generate_videos(prompts: List[str], project_name: str = "output"):
     video_files = []
+    
+    # Create videos directory in backend/assets
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    videos_dir = os.path.join(backend_dir,  "videos", project_name)
+    os.makedirs(videos_dir, exist_ok=True)
+    
     for prompt in prompts:
-        video_path = f"videos/{project_name}/{prompt}.mp4"
+        video_path = os.path.join(videos_dir, f"{prompt}.mp4")
         success = text_to_video(prompt, video_path)
         if success:
             video_files.append(video_path)
@@ -63,26 +68,20 @@ def create_video_content(script: str, num_videos: int = 3, project_name: str = "
     
     
 if __name__ == "__main__":
-    # Read the script from the file
-    try:
-        with open("transformed_script.txt", "r") as file:
-            script = file.read()
-        
-        # Generate video prompts
-        result = generate_video_prompts(script, num_videos=3)
-        
-        # Generate videos
-        generate_videos(result.videos)
-        
-        # Print the results
-        if result:
-            print("\nGenerated video prompts:")
-            for i, video in enumerate(result.videos, 1):
-                print(f"{i}. {video}")
-    except FileNotFoundError:
-        print("Error: transformed_script.txt file not found.")
-    except Exception as e:
-        print(f"Error: {e}")
+    script = "Tesla shares rose by 14.8% on Wednesday as investors speculated about possible policy changes."
+    
+    # Generate video prompts
+    result = generate_video_prompts(script, num_videos=3)
+    
+    # Generate videos
+    generate_videos(result.videos)
+    
+    # Print the results
+    if result:
+        print("\nGenerated video prompts:")
+        for i, video in enumerate(result.videos, 1):
+            print(f"{i}. {video}")
+
     
     
     
