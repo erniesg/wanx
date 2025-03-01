@@ -39,13 +39,14 @@ def sanitize_project_name(name):
     sanitized = re.sub(r'[^\w\-_.]', '_', name.replace(' ', '_'))
     return sanitized
 
-def create_tiktok(content, log_callback=None):
+def create_tiktok(content, log_callback=None, job_id=None):
     """
     Create a TikTok video from content with progress updates via callback.
 
     Args:
         content (str): The content to create a video from
         log_callback (callable, optional): Function to call with status updates
+        job_id (str, optional): Unique identifier for this job
 
     Returns:
         str: Path to the final video
@@ -55,6 +56,14 @@ def create_tiktok(content, log_callback=None):
         log_callback("Starting to process content...")
 
     logger.info("Starting TikTok creation process")
+
+    # Use job_id as the project name if provided, otherwise sanitize content
+    if job_id:
+        project_name = job_id
+        logger.info(f"Using job_id as project name: {project_name}")
+    else:
+        project_name = sanitize_project_name(content[:10])
+        logger.info(f"Using sanitized content as project name: {project_name}")
 
     # Create necessary directories with consistent paths
     backend_dir = os.path.dirname(os.path.dirname(__file__))
@@ -75,10 +84,10 @@ def create_tiktok(content, log_callback=None):
             log_callback("Error: Failed to transform content to script")
         return None
 
-    # Generate video prompts - sanitize project name
-    project_name = sanitize_project_name(content[:10])
     audio_file = f"{project_name}.mp3"
+    audio_path = os.path.join(audio_dir, audio_file)
     logger.info(f"Project name: {project_name}")
+    logger.info(f"Audio will be saved to: {audio_path}")
 
     if log_callback:
         log_callback("Generating audio from script...")
@@ -87,22 +96,31 @@ def create_tiktok(content, log_callback=None):
     logger.info("Generating speech from text")
     audio_path = text_to_speech(script, audio_file)
 
+    # Add additional validation for the audio file
     if not audio_path or not os.path.exists(audio_path):
         logger.error(f"Failed to create audio file: {audio_file}")
         if log_callback:
             log_callback("Error: Failed to create audio file")
         return None
 
-    logger.info(f"Audio saved to {audio_path}")
-
-    # Get audio length
-    audio_length = get_audio_length(audio_path)
-
-    if audio_length is None:
-        logger.error("Failed to get audio length, using default length of 30 seconds")
-        audio_length = 30  # Default to 30 seconds if we can't determine length
+    # Verify the audio file is valid
+    logger.info(f"Verifying audio file integrity: {audio_path}")
+    try:
+        from pydub import AudioSegment
+        audio = AudioSegment.from_mp3(audio_path)
+        logger.info(f"Audio file verified: {audio_path}, duration: {len(audio)/1000} seconds")
+        audio_length = len(audio)/1000  # Convert milliseconds to seconds
+    except Exception as e:
+        logger.error(f"Error verifying audio file: {str(e)}")
         if log_callback:
-            log_callback("Warning: Using default audio length of 30 seconds")
+            log_callback(f"Error: Audio file verification failed: {str(e)}")
+        # Try to get length using get_audio_length as fallback
+        audio_length = get_audio_length(audio_path)
+        if audio_length is None:
+            logger.error("Failed to get audio length, using default length of 30 seconds")
+            audio_length = 30  # Default to 30 seconds if we can't determine length
+            if log_callback:
+                log_callback("Warning: Using default audio length of 30 seconds")
 
     logger.info(f"Audio length: {audio_length} seconds")
 
@@ -119,10 +137,11 @@ def create_tiktok(content, log_callback=None):
     project_videos_dir = os.path.join(videos_dir, project_name)
     os.makedirs(project_videos_dir, exist_ok=True)
 
-    project_name = create_video_content(content, num_videos=num_videos, project_name=project_name)
+    # Pass the project_name to create_video_content
+    video_project_name = create_video_content(content, num_videos=num_videos, project_name=project_name)
 
     # Check if project_name is None
-    if project_name is None:
+    if video_project_name is None:
         logger.error("Failed to create video content")
         if log_callback:
             log_callback("Error: Failed to create video content")

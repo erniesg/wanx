@@ -100,8 +100,8 @@ async def generate_video_stream(request: VideoRequest, background_tasks: Backgro
 async def run_video_generation(job_id, content, log_callback):
     """Run the video generation process in the background"""
     try:
-        # Run the video generation with the callback
-        video_path = create_tiktok(content, log_callback)
+        # Pass the job_id to create_tiktok to use as a consistent identifier
+        video_path = create_tiktok(content, log_callback, job_id)
 
         # Store the result
         if video_path and os.path.exists(video_path):
