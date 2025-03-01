@@ -88,7 +88,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     progress: 0,
     message: 'Initializing...'
   },
-  videoUrl: 'https://github.com/erniesg/wanx/raw/refs/heads/main/backend/assets/demo/output.mp4',
+  videoUrl: null, // Changed from hardcoded URL to null
   
   // Mode settings
   isLiveMode: false,
@@ -189,11 +189,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   setProcessingStatus: (status) => {
     set({ processingStatus: status });
   },
+  
+  // Add a new action to set the video URL
+  setVideoUrl: (url) => {
+    set({ videoUrl: url });
+  },
 
   startGeneration: () => {
-    const { isLiveMode } = get();
-    
-    if (isLiveMode) {
+    if (get().isLiveMode) {
       // In live mode, go directly to processing page
       set({ 
         currentPage: 'processing',

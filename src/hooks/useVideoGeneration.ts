@@ -9,7 +9,8 @@ export const useVideoGeneration = () => {
     setCurrentPage, 
     inputValue, 
     processingStatus, 
-    setProcessingStatus 
+    setProcessingStatus,
+    setVideoUrl: storeSetVideoUrl
   } = useAppStore();
   
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +71,7 @@ export const useVideoGeneration = () => {
       // Get demo video URL
       const demoUrl = await apiClient.mockGenerateVideo(inputValue);
       setVideoUrl(demoUrl);
+      storeSetVideoUrl(demoUrl); // Update the store's videoUrl
       
       updateStatus(100, 'Video ready!', 'complete');
       setCurrentPage('completion');
@@ -80,7 +82,7 @@ export const useVideoGeneration = () => {
       updateStatus(0, 'Error generating demo video', 'complete');
       return null;
     }
-  }, [inputValue, setCurrentPage, updateStatus]);
+  }, [inputValue, setCurrentPage, updateStatus, storeSetVideoUrl]);
   
   // Main function to generate video based on current mode
   const generateVideo = useCallback(async () => {

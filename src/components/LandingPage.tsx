@@ -22,13 +22,18 @@ const LandingPage: React.FC = () => {
     
     // Clear input value when switching to Live mode
     if (isLiveMode) {
-      setInputValue('');
-      setIsInputValid(false);
+      // Use the setter function from the store
+      if (setInputValue) {
+        setInputValue('');
+        setIsInputValid(false);
+      }
     } else {
       // Set default URL in Demo mode
       const DEFAULT_DEMO_URL = "https://www.techinasia.com/news/sg-charges-people-fraud-nvidia-chip-export-case";
-      setInputValue(DEFAULT_DEMO_URL);
-      setIsInputValid(true);
+      if (setInputValue) {
+        setInputValue(DEFAULT_DEMO_URL);
+        setIsInputValid(true);
+      }
     }
   }, [isLiveMode, setInputValue]);
 
@@ -41,7 +46,9 @@ const LandingPage: React.FC = () => {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const value = e.target.value;
-    setInputValue(value);
+    if (setInputValue) {
+      setInputValue(value);
+    }
     setIsInputValid(value.trim().length > 0);
   };
 

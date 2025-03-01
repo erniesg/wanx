@@ -175,6 +175,46 @@ async def job_status(job_id: str):
         "video_path": job_results.get(job_id) if is_complete else None
     }
 
+@app.get("/videos/{filename}")
+@app.head("/videos/{filename}")  # Also allow HEAD requests
+async def get_video_by_filename(filename: str):
+    """Serve a video file directly by filename"""
+    # Construct the path to the video file
+    video_path = os.path.join(assets_dir, "videos", filename)
+
+    # Check if the file exists
+    if not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    # Return the video file
+    return FileResponse(
+        path=video_path,
+        media_type="video/mp4",
+        filename=filename
+    )
+
+@app.delete("/cleanup/{job_id}")
+async def cleanup_job(job_id: str):
+    """Clean up resources for a completed job"""
+    if job_id not in active_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Get the video path if it exists
+    video_path = job_results.get(job_id)
+
+    # Remove job data from memory
+    active_jobs.pop(job_id, None)
+    job_results.pop(job_id, None)
+
+    # Optionally, delete the video file (uncomment if desired)
+    # if video_path and os.path.exists(video_path):
+    #     try:
+    #         os.remove(video_path)
+    #     except Exception as e:
+    #         print(f"Error deleting file {video_path}: {e}")
+
+    return {"status": "success", "message": f"Cleaned up resources for job {job_id}"}
+
 # Add this to the startup event
 @app.on_event("startup")
 async def startup_event():

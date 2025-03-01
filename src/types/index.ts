@@ -42,7 +42,7 @@ export interface AppState {
   inputType: 'url' | 'text';
   inputValue: string;
   processingStatus: ProcessingStatus;
-  videoUrl: string;
+  videoUrl: string | null;
   
   // Mode settings
   isLiveMode: boolean;
@@ -61,6 +61,7 @@ export interface AppState {
   setInputType: (type: 'url' | 'text') => void;
   setInputValue: (value: string) => void;
   setProcessingStatus: (status: ProcessingStatus) => void;
+  setVideoUrl: (url: string | null) => void;
   startGeneration: () => void;
   generateVideo: () => void;
   publishToTikTok: () => Promise<boolean>;

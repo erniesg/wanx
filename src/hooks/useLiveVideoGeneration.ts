@@ -8,7 +8,8 @@ export const useLiveVideoGeneration = () => {
     inputValue, 
     setProcessingStatus,
     isLiveMode,
-    currentPage
+    currentPage,
+    setVideoUrl: storeSetVideoUrl
   } = useAppStore();
   
   const [jobId, setJobId] = useState<string | null>(null);
@@ -67,14 +68,94 @@ export const useLiveVideoGeneration = () => {
     setLogs(prev => [...prev, log]);
     
     // Update status based on log message
-    if (log.includes('Analyzing') || log.includes('Extracting')) {
+    if (log.includes('Analyzing') || log.includes('Extracting') || log.includes('Transforming') || log.includes('Starting to process')) {
       updateStatus(30, log, 'analyzing');
-    } else if (log.includes('Rendering') || log.includes('Generating scene')) {
+    } else if (log.includes('Rendering') || log.includes('Generating') || log.includes('Creating')) {
       updateStatus(60, log, 'generating');
-    } else if (log.includes('Applying') || log.includes('Encoding') || log.includes('Optimizing')) {
+    } else if (log.includes('Applying') || log.includes('Encoding') || log.includes('Combining') || log.includes('Adding')) {
       updateStatus(80, log, 'rendering');
+    } else if (log.includes('complete') || log.includes('Complete') || log.includes('Video generation complete')) {
+      updateStatus(95, 'Video generation complete, retrieving video...', 'rendering');
+      
+      // Extract job ID from log message if it contains one
+      const match = log.match(/Video generation complete: ([a-f0-9-]+)_tiktok/);
+      if (match && match[1]) {
+        console.log(`[LiveVideoGeneration] Extracted job ID from log: ${match[1]}`);
+        setJobId(match[1]);
+      }
     }
   }, [updateStatus]);
+  
+  // Get the generated video
+  const getVideo = useCallback(async (id: string) => {
+    try {
+      updateStatus(95, 'Retrieving generated video...', 'rendering');
+      
+      let videoData: Blob | string;
+      
+      if (!isLiveMode) {
+        // Use mock when not in live mode
+        videoData = await liveApiClient.mock.getVideo();
+        const url = videoData as string;
+        setVideoUrl(url);
+        storeSetVideoUrl(url); // Update the store's videoUrl
+      } else {
+        // Use real API in live mode
+        try {
+          // First try to get the video directly from the backend
+          videoData = await liveApiClient.getVideo(id);
+          
+          // Create a URL for the blob
+          if (videoData instanceof Blob) {
+            const url = URL.createObjectURL(videoData);
+            console.log('[LiveVideoGeneration] Created blob URL:', url);
+            setVideoUrl(url);
+            storeSetVideoUrl(url); // Update the store's videoUrl
+          } else {
+            // If it's a string (URL), use it directly
+            console.log('[LiveVideoGeneration] Using provided URL:', videoData);
+            const url = videoData as string;
+            setVideoUrl(url);
+            storeSetVideoUrl(url); // Update the store's videoUrl
+          }
+        } catch (error) {
+          console.error('[LiveVideoGeneration] Error getting video, falling back to mock:', error);
+          // Fallback to demo video if there's an error
+          videoData = await liveApiClient.mock.getVideo();
+          const url = videoData as string;
+          setVideoUrl(url);
+          storeSetVideoUrl(url); // Update the store's videoUrl
+        }
+      }
+      
+      updateStatus(100, 'Video generation complete!', 'complete');
+      setCurrentPage('completion');
+      
+      // Cleanup job resources
+      if (isLiveMode) {
+        try {
+          await liveApiClient.cleanup(id);
+        } catch (error) {
+          console.error('[LiveVideoGeneration] Error cleaning up job:', error);
+        }
+      }
+      
+      return videoData;
+    } catch (error) {
+      console.error('[LiveVideoGeneration] Error getting video:', error);
+      setError(error instanceof Error ? error.message : 'Failed to retrieve video');
+      updateStatus(0, 'Error retrieving video', 'complete');
+      
+      // Fallback to demo video
+      const demoUrl = await liveApiClient.mock.getVideo();
+      const url = demoUrl as string;
+      setVideoUrl(url);
+      storeSetVideoUrl(url); // Update the store's videoUrl
+      setCurrentPage('completion');
+      
+      return null;
+    }
+  }, [setCurrentPage, updateStatus, isLiveMode, storeSetVideoUrl]);
   
   // Start polling job status as fallback
   const startStatusPolling = useCallback((id: string) => {
@@ -102,6 +183,14 @@ export const useLiveVideoGeneration = () => {
           updateStatus(status.progress, status.message, step);
         }
         
+        // Add any new logs
+        if (status.logs && Array.isArray(status.logs)) {
+          const newLogs = status.logs.filter(log => !logs.includes(log));
+          if (newLogs.length > 0) {
+            setLogs(prev => [...prev, ...newLogs]);
+          }
+        }
+        
         if (status.status === 'complete') {
           clearInterval(statusPollingRef.current!);
           statusPollingRef.current = null;
@@ -117,52 +206,7 @@ export const useLiveVideoGeneration = () => {
         console.error('[LiveVideoGeneration] Error polling status:', error);
       }
     }, 3000);
-  }, [updateStatus]);
-  
-  // Get the generated video
-  const getVideo = useCallback(async (id: string) => {
-    try {
-      updateStatus(95, 'Retrieving generated video...', 'rendering');
-      
-      let videoData: Blob | string;
-      
-      if (!isLiveMode) {
-        // Use mock when not in live mode
-        videoData = await liveApiClient.mock.getVideo();
-        setVideoUrl(videoData as string);
-      } else {
-        // Use real API in live mode
-        try {
-          videoData = await liveApiClient.getVideo(id);
-          const url = URL.createObjectURL(videoData as Blob);
-          setVideoUrl(url);
-        } catch (error) {
-          console.error('[LiveVideoGeneration] Error getting video, falling back to mock:', error);
-          videoData = await liveApiClient.mock.getVideo();
-          setVideoUrl(videoData as string);
-        }
-      }
-      
-      updateStatus(100, 'Video generation complete!', 'complete');
-      setCurrentPage('completion');
-      
-      // Cleanup job resources
-      if (isLiveMode) {
-        try {
-          await liveApiClient.cleanup(id);
-        } catch (error) {
-          console.error('[LiveVideoGeneration] Error cleaning up job:', error);
-        }
-      }
-      
-      return videoData;
-    } catch (error) {
-      console.error('[LiveVideoGeneration] Error getting video:', error);
-      setError(error instanceof Error ? error.message : 'Failed to retrieve video');
-      updateStatus(0, 'Error retrieving video', 'complete');
-      return null;
-    }
-  }, [setCurrentPage, updateStatus, isLiveMode]);
+  }, [updateStatus, logs, getVideo]);
   
   // Handle WebSocket connection
   const connectToWebSocket = useCallback((id: string) => {
@@ -225,6 +269,7 @@ export const useLiveVideoGeneration = () => {
       setLogs([]);
       setError(null);
       setVideoUrl(null);
+      storeSetVideoUrl(null); // Clear the store's videoUrl
       cleanup();
       
       updateStatus(10, 'Connecting to generation service...', 'analyzing');
@@ -260,7 +305,7 @@ export const useLiveVideoGeneration = () => {
       setIsGenerating(false);
       return null;
     }
-  }, [isLiveMode, inputValue, cleanup, updateStatus, connectToWebSocket]);
+  }, [isLiveMode, inputValue, cleanup, updateStatus, connectToWebSocket, storeSetVideoUrl]);
   
   // Auto-start generation when in live mode and on processing page
   useEffect(() => {
@@ -281,12 +326,33 @@ export const useLiveVideoGeneration = () => {
   const downloadVideo = useCallback(() => {
     if (!videoUrl) return;
     
-    const a = document.createElement('a');
-    a.href = videoUrl;
-    a.download = 'generated_video.mp4';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    // If it's a direct URL to the backend, we need to fetch it first
+    if (videoUrl.startsWith('http://localhost:8000/')) {
+      fetch(videoUrl)
+        .then(response => response.blob())
+        .then(blob => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'generated_video.mp4';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        })
+        .catch(error => {
+          console.error('[LiveVideoGeneration] Error downloading video:', error);
+          alert('Failed to download video. Please try again.');
+        });
+    } else {
+      // For blob URLs or external URLs
+      const a = document.createElement('a');
+      a.href = videoUrl;
+      a.download = 'generated_video.mp4';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    }
   }, [videoUrl]);
   
   return {

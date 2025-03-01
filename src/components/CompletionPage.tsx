@@ -16,7 +16,8 @@ const CompletionPage: React.FC = () => {
   // Log mode for debugging
   useEffect(() => {
     console.log(`[CompletionPage] Current mode: ${isLiveMode ? 'LIVE' : 'DEMO'}`);
-  }, [isLiveMode]);
+    console.log(`[CompletionPage] Video URL: ${videoUrl}`);
+  }, [isLiveMode, videoUrl]);
 
   const handlePublishToTikTok = async () => {
     setShowConnectModal(true);
@@ -106,13 +107,19 @@ const CompletionPage: React.FC = () => {
             
             <div className="flex flex-col md:flex-row items-center gap-6">
               <div className="video-player md:w-1/3 w-full aspect-[9/16] mx-auto">
-                <video 
-                  src={videoUrl}
-                  controls 
-                  className="w-full h-full object-cover"
-                  autoPlay
-                  loop
-                ></video>
+                {videoUrl ? (
+                  <video 
+                    src={videoUrl}
+                    controls 
+                    className="w-full h-full object-cover"
+                    autoPlay
+                    loop
+                  ></video>
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-black">
+                    <p className="text-white text-center">Video not available</p>
+                  </div>
+                )}
               </div>
               
               <div className="md:w-2/3 w-full flex flex-col justify-center space-y-6">
@@ -130,6 +137,7 @@ const CompletionPage: React.FC = () => {
                     <button 
                       className="neon-button flex items-center justify-center"
                       onClick={handleDownload}
+                      disabled={!videoUrl}
                     >
                       <Download size={16} className="mr-2" />
                       Download Video
@@ -148,7 +156,7 @@ const CompletionPage: React.FC = () => {
                     className="neon-button primary flex items-center justify-center relative overflow-visible"
                     onClick={handlePublishToTikTok}
                     whileHover={{ scale: 1.05 }}
-                    disabled={isPublishing || isPublished}
+                    disabled={isPublishing || isPublished || !videoUrl}
                     animate={{
                       boxShadow: isPublished 
                         ? '0 0 20px rgba(0, 255, 255, 0.8)'
