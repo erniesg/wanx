@@ -2,19 +2,19 @@
 import { ProcessingStatus } from '../types';
 
 // API endpoints for live mode
-const LIVE_API_BASE_URL = 'https://api.wanx.io/live';
+const LIVE_API_BASE_URL = 'https://api.wanx.io';
 
 export const LIVE_API_ENDPOINTS = {
-  START_GENERATION: `${LIVE_API_BASE_URL}/start_generation`,
+  START_GENERATION: `${LIVE_API_BASE_URL}/generate_video`,
   JOB_STATUS: `${LIVE_API_BASE_URL}/job_status`,
-  GET_VIDEO: `${LIVE_API_BASE_URL}/get_video`,
+  GET_VIDEO: `${LIVE_API_BASE_URL}/video`,
   CLEANUP: `${LIVE_API_BASE_URL}/cleanup`,
 };
 
 // WebSocket connection for log streaming
 export const createLogWebSocket = (jobId: string, onMessage: (log: string) => void, onError: (error: any) => void, onComplete: () => void) => {
   try {
-    const wsUrl = `ws://api.wanx.io/live/ws/logs/${jobId}`;
+    const wsUrl = `ws://${LIVE_API_BASE_URL.replace('https://', '')}/ws/logs/${jobId}`;
     console.log(`[LiveAPI] Connecting to WebSocket: ${wsUrl}`);
     
     const socket = new WebSocket(wsUrl);
