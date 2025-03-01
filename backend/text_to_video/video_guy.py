@@ -28,7 +28,7 @@ def generate_video_prompts(script: str, num_videos: int = 3):
                 },
                 {
                     "role": "user",
-                    "content": f"Here is the script: {script} and we need 2 videos. think of engaging prompts it must be visual in nature for the vision model to generate videos!"
+                    "content": f"Here is the script: {script} and we need {num_videos} videos. think of engaging prompts it must be visual in nature for the vision model to generate videos!"
                 }
             ],
             stop=None,
