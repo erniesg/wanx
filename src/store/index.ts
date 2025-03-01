@@ -193,35 +193,32 @@ export const useAppStore = create<AppState>((set, get) => ({
   startGeneration: () => {
     const { isLiveMode } = get();
     
-    set({ 
-      currentPage: 'script',
-      processingStatus: {
-        step: 'analyzing',
-        progress: 0,
-        message: 'Analyzing content...'
-      }
-    });
-
-    console.log(`[Mode] Starting generation in ${isLiveMode ? 'LIVE' : 'DEMO'} mode`);
-
     if (isLiveMode) {
-      // In live mode, we would make an actual API call
-      // This is a placeholder for the actual implementation
-      console.log('[Live Mode] Making API call to generate script');
+      // In live mode, go directly to processing page
+      set({ 
+        currentPage: 'processing',
+        processingStatus: {
+          step: 'analyzing',
+          progress: 0,
+          message: 'Initializing content analysis...'
+        }
+      });
       
-      // Simulate API call with a timeout
-      setTimeout(() => {
-        console.log('[Live Mode] Script generation API call completed');
-        set((state) => ({
-          processingStatus: {
-            ...state.processingStatus,
-            progress: 100,
-            message: 'Analysis complete!'
-          }
-        }));
-      }, 3000);
+      console.log('[Live Mode] Starting generation and going directly to processing page');
+      
+      // The actual API call will be handled by the useLiveVideoGeneration hook
+      // when the processing page mounts
     } else {
-      // In demo mode, we just simulate the process
+      // In demo mode, go to script review page first
+      set({ 
+        currentPage: 'script',
+        processingStatus: {
+          step: 'analyzing',
+          progress: 0,
+          message: 'Analyzing content...'
+        }
+      });
+
       console.log('[Demo Mode] Simulating script generation');
       
       // Simulate content analysis

@@ -7,7 +7,8 @@ export const useLiveVideoGeneration = () => {
     setCurrentPage, 
     inputValue, 
     setProcessingStatus,
-    isLiveMode
+    isLiveMode,
+    currentPage
   } = useAppStore();
   
   const [jobId, setJobId] = useState<string | null>(null);
@@ -196,6 +197,14 @@ export const useLiveVideoGeneration = () => {
     }
   }, [handleLogMessage, startStatusPolling, getVideo, updateStatus]);
   
+  // Auto-start generation when in live mode and on processing page
+  useEffect(() => {
+    if (isLiveMode && currentPage === 'processing' && !jobId && !isGenerating) {
+      console.log('[LiveVideoGeneration] Auto-starting generation in live mode');
+      startGeneration();
+    }
+  }, [isLiveMode, currentPage, jobId, isGenerating]);
+  
   // Start video generation
   const startGeneration = useCallback(async () => {
     if (!isLiveMode) {
@@ -211,7 +220,6 @@ export const useLiveVideoGeneration = () => {
       cleanup();
       
       updateStatus(10, 'Connecting to generation service...', 'analyzing');
-      setCurrentPage('processing');
       
       let response;
       
@@ -240,7 +248,7 @@ export const useLiveVideoGeneration = () => {
       setIsGenerating(false);
       return null;
     }
-  }, [isLiveMode, inputValue, cleanup, updateStatus, setCurrentPage, connectToWebSocket]);
+  }, [isLiveMode, inputValue, cleanup, updateStatus, connectToWebSocket]);
   
   // Download the generated video
   const downloadVideo = useCallback(() => {
