@@ -116,19 +116,21 @@ def combine_videos(
         video_width = final_video.w
         txt_clip = TextClip(
             text=subtitle_text,
-            font_size=font_size,
+            font_size=40,
             font=font,
             color=font_color,
             bg_color=None,  # Transparent background
             method='caption',
             text_align='center',
-            size=(int(video_width * 0.8), None),  # Width constraint for word wrapping
+            size=(int(video_width * 0.9), None),  # Width constraint for word wrapping
             stroke_color='black',
-            stroke_width=1
+            stroke_width=5
         )
 
         # Position at center of the video frame
-        txt_clip = txt_clip.with_position('center').with_duration(final_video.duration)
+        # Start subtitle 1 second into the video
+        start_time = 1.0  # 1 second delay
+        txt_clip = txt_clip.with_position('center').with_start(start_time).with_duration(final_video.duration - start_time)
 
         # Add subtitle to video
         final_video = CompositeVideoClip([final_video, txt_clip])
