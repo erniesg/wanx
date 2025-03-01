@@ -68,7 +68,9 @@ const CompletionPage: React.FC = () => {
                   <span className="famous-text">Famous!</span>
                 </>
               ) : (
-                "You're Almost Famous!"
+                <>
+                  You're Almost Famous!
+                </>
               )}
             </h1>
             <button 

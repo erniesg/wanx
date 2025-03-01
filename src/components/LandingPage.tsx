@@ -228,7 +228,7 @@ const LandingPage: React.FC = () => {
             
             <div className="cyberpunk-card p-6">
               <div className="scanline"></div>
-              <h2 className="text-xl font-orbitron mb-4 text-secondary-cyan">Analysis Log</h2>
+              <h2 className="text-xl font-orbitron mb-4 text-secondary-cyan">Log</h2>
               
               <div 
                 className="bg-background-dark p-4 rounded-sm h-60 overflow-y-auto font-mono text-sm"
