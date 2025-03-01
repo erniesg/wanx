@@ -5,14 +5,14 @@ import PageHeader from './PageHeader';
 import Footer from './Footer';
 
 const ProcessingPage: React.FC = () => {
-  const { processingStatus } = useAppStore();
+  const { processingStatus, isLiveMode } = useAppStore();
   const { step, progress, message } = processingStatus;
   const [logs, setLogs] = useState<string[]>([]);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // Simulated log messages
   useEffect(() => {
-    const logMessages = [
+    const demoLogMessages = [
       "Initializing video generation process...",
       "Analyzing content structure...",
       "Extracting key themes and topics...",
@@ -33,6 +33,28 @@ const ProcessingPage: React.FC = () => {
       "Preparing final output..."
     ];
 
+    const liveLogMessages = [
+      "Connecting to AI video generation service...",
+      "Authenticating connection...",
+      "Sending script data to API...",
+      "API received request, processing...",
+      "Initializing AI model for video generation...",
+      "Loading scene generation parameters...",
+      "AI generating visual concepts for scene 1...",
+      "Applying style transfer to generated frames...",
+      "Processing scene transitions...",
+      "Rendering video frames with GPU acceleration...",
+      "Applying motion effects to scene elements...",
+      "Generating audio track from script...",
+      "Synchronizing audio with visual elements...",
+      "Optimizing video for TikTok platform...",
+      "Applying final compression and encoding...",
+      "Preparing to deliver completed video..."
+    ];
+
+    const logMessages = isLiveMode ? liveLogMessages : demoLogMessages;
+    console.log(`[ProcessingPage] Using ${isLiveMode ? 'LIVE' : 'DEMO'} mode logs`);
+
     const addLogMessage = (index: number) => {
       if (index < logMessages.length) {
         setLogs(prev => [...prev, logMessages[index]]);
@@ -40,8 +62,10 @@ const ProcessingPage: React.FC = () => {
       }
     };
 
+    // Clear logs when mode changes
+    setLogs([]);
     addLogMessage(0);
-  }, []);
+  }, [isLiveMode]);
 
   // Auto-scroll logs to bottom
   useEffect(() => {
@@ -123,7 +147,14 @@ const ProcessingPage: React.FC = () => {
           
           <div className="cyberpunk-card p-6">
             <div className="scanline"></div>
-            <h2 className="text-xl font-orbitron mb-4 text-secondary-cyan">Log</h2>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-orbitron text-secondary-cyan">Log</h2>
+              <div className="flex items-center">
+                <span className={`text-xs px-2 py-1 rounded-full ${isLiveMode ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-300'}`}>
+                  {isLiveMode ? 'Live Mode' : 'Demo Mode'}
+                </span>
+              </div>
+            </div>
             
             <div 
               ref={logContainerRef}

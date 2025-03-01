@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAppStore } from '../store';
 import { motion } from 'framer-motion';
 import { Download, Home } from 'lucide-react';
@@ -6,10 +6,15 @@ import PageHeader from './PageHeader';
 import Footer from './Footer';
 
 const CompletionPage: React.FC = () => {
-  const { videoUrl, processingStatus, publishToTikTok, setCurrentPage } = useAppStore();
+  const { videoUrl, processingStatus, publishToTikTok, setCurrentPage, isLiveMode } = useAppStore();
   const [isPublishing, setIsPublishing] = useState(false);
   const [isPublished, setIsPublished] = useState(false);
   const [showConnectModal, setShowConnectModal] = useState(false);
+
+  // Log mode for debugging
+  useEffect(() => {
+    console.log(`[CompletionPage] Current mode: ${isLiveMode ? 'LIVE' : 'DEMO'}`);
+  }, [isLiveMode]);
 
   const handlePublishToTikTok = async () => {
     setShowConnectModal(true);
@@ -73,13 +78,18 @@ const CompletionPage: React.FC = () => {
                 </>
               )}
             </h1>
-            <button 
-              onClick={handleGoHome}
-              className="neon-button flex items-center"
-            >
-              <Home size={16} className="mr-2" />
-              Home
-            </button>
+            <div className="flex items-center space-x-3">
+              <div className={`text-xs px-2 py-1 rounded-full ${isLiveMode ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-300'}`}>
+                {isLiveMode ? 'Live Mode' : 'Demo Mode'}
+              </div>
+              <button 
+                onClick={handleGoHome}
+                className="neon-button flex items-center"
+              >
+                <Home size={16} className="mr-2" />
+                Home
+              </button>
+            </div>
           </div>
           
           <div className="cyberpunk-card p-6 mb-8">
@@ -155,6 +165,11 @@ const CompletionPage: React.FC = () => {
             
             <p className="mb-6 text-gray-300">
               To publish your video directly to TikTok, you need to connect your TikTok account.
+              {isLiveMode && (
+                <span className="block mt-2 text-green-300">
+                  Live Mode: This will attempt to connect to the actual TikTok API.
+                </span>
+              )}
             </p>
             
             <div className="flex space-x-4">

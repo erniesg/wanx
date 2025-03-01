@@ -6,12 +6,28 @@ import PageHeader from './PageHeader';
 import Footer from './Footer';
 
 const LandingPage: React.FC = () => {
-  const { inputType, setInputType, inputValue, setInputValue, startGeneration } = useAppStore();
+  const { inputType, setInputType, inputValue, setInputValue, startGeneration, isLiveMode } = useAppStore();
   const [isInputValid, setIsInputValid] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationProgress, setGenerationProgress] = useState(0);
   const [generationMessage, setGenerationMessage] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
+
+  // Log mode changes for debugging
+  useEffect(() => {
+    console.log(`[LandingPage] Current mode: ${isLiveMode ? 'LIVE' : 'DEMO'}`);
+    
+    // Clear input value when switching to Live mode
+    if (isLiveMode) {
+      setInputValue('');
+      setIsInputValid(false);
+    } else {
+      // Set default URL in Demo mode
+      const DEFAULT_DEMO_URL = "https://www.techinasia.com/news/sg-charges-people-fraud-nvidia-chip-export-case";
+      setInputValue(DEFAULT_DEMO_URL);
+      setIsInputValid(true);
+    }
+  }, [isLiveMode, setInputValue]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const value = e.target.value;
@@ -95,6 +111,15 @@ const LandingPage: React.FC = () => {
     setTimeout(updateProgress, 1000);
   };
 
+  // Get the appropriate placeholder text based on input type
+  const getPlaceholderText = () => {
+    if (inputType === 'url') {
+      return "Paste your URL here";
+    } else {
+      return "Paste your text here";
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-background-dark to-background-darker flex flex-col">
       <div className="cyber-grid"></div>
@@ -135,18 +160,30 @@ const LandingPage: React.FC = () => {
                     type="text"
                     value={inputValue}
                     onChange={handleInputChange}
-                    placeholder="Paste URL here..."
+                    placeholder={getPlaceholderText()}
                     className="input-field py-3 bg-background-dark"
                   />
+                  {isLiveMode && (
+                    <div className="mt-2 text-xs text-green-400 flex items-center">
+                      <div className="live-indicator mr-2"></div>
+                      Live Mode: Will connect to actual API endpoints
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="mb-6">
                   <textarea
                     value={inputValue}
                     onChange={handleInputChange}
-                    placeholder="Paste your text here..."
+                    placeholder={getPlaceholderText()}
                     className="input-field min-h-32 py-3 bg-background-dark"
                   ></textarea>
+                  {isLiveMode && (
+                    <div className="mt-2 text-xs text-green-400 flex items-center">
+                      <div className="live-indicator mr-2"></div>
+                      Live Mode: Will connect to actual API endpoints
+                    </div>
+                  )}
                 </div>
               )}
               
@@ -228,7 +265,14 @@ const LandingPage: React.FC = () => {
             
             <div className="cyberpunk-card p-6">
               <div className="scanline"></div>
-              <h2 className="text-xl font-orbitron mb-4 text-secondary-cyan">Log</h2>
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-orbitron text-secondary-cyan">Log</h2>
+                <div className="flex items-center">
+                  <span className={`text-xs px-2 py-1 rounded-full ${isLiveMode ? 'bg-green-900 text-green-300' : 'bg-gray-700 text-gray-300'}`}>
+                    {isLiveMode ? 'Live Mode' : 'Demo Mode'}
+                  </span>
+                </div>
+              </div>
               
               <div 
                 className="bg-background-dark p-4 rounded-sm h-60 overflow-y-auto font-mono text-sm"

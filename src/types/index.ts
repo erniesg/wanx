@@ -42,6 +42,9 @@ export interface AppState {
   };
   videoUrl: string;
   
+  // Mode settings
+  isLiveMode: boolean;
+  
   // Actions
   setGlobalSettings: (settings: Partial<GlobalSettings>) => void;
   addScene: () => void;
@@ -58,6 +61,9 @@ export interface AppState {
   startGeneration: () => void;
   generateVideo: () => void;
   publishToTikTok: () => Promise<boolean>;
+  
+  // Mode actions
+  toggleLiveMode: () => void;
 }
 
 export interface DropdownOption {

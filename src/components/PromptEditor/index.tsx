@@ -21,7 +21,7 @@ const PromptEditor: React.FC<PromptEditorProps> = ({
   bgColor = "background-dark"
 }) => {
   const [activeComponent, setActiveComponent] = useState<string | null>(null);
-  const [hoveredComponent, setHoveredComponent] = useState <string | null>(null);
+  const [hoveredComponent, setHoveredComponent] = useState<string | null>(null);
 
   const handleComponentClick = (component: string) => {
     setActiveComponent(component);

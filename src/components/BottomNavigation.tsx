@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ArrowLeft, RefreshCw, Video } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAppStore } from '../store';
 
 const BottomNavigation: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
-  const { generateVideo, setCurrentPage } = useAppStore();
+  const { generateVideo, setCurrentPage, isLiveMode } = useAppStore();
 
   const handleGenerateVideo = () => {
     setIsGenerating(true);
@@ -13,12 +13,17 @@ const BottomNavigation: React.FC = () => {
     setTimeout(() => {
       setIsGenerating(false);
       generateVideo();
-    }, 3000);
+    }, 1000);
   };
 
   const handleBack = () => {
     setCurrentPage('landing');
   };
+
+  // Log mode changes for debugging
+  useEffect(() => {
+    console.log(`[BottomNavigation] Current mode: ${isLiveMode ? 'LIVE' : 'DEMO'}`);
+  }, [isLiveMode]);
 
   return (
     <div className="cyberpunk-card p-4 flex justify-between items-center">
