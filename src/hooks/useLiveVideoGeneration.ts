@@ -126,12 +126,12 @@ export const useLiveVideoGeneration = () => {
       
       let videoData: Blob | string;
       
-      if (process.env.NODE_ENV === 'development') {
-        // Use mock in development
+      if (process.env.NODE_ENV === 'development' && !isLiveMode) {
+        // Use mock in development when not in live mode
         videoData = await liveApiClient.mock.getVideo();
         setVideoUrl(videoData as string);
       } else {
-        // Use real API in production
+        // Use real API in production or live mode
         videoData = await liveApiClient.getVideo(id);
         const url = URL.createObjectURL(videoData as Blob);
         setVideoUrl(url);
@@ -141,7 +141,7 @@ export const useLiveVideoGeneration = () => {
       setCurrentPage('completion');
       
       // Cleanup job resources
-      if (process.env.NODE_ENV !== 'development') {
+      if (isLiveMode) {
         await liveApiClient.cleanup(id);
       }
       
@@ -152,13 +152,13 @@ export const useLiveVideoGeneration = () => {
       updateStatus(0, 'Error retrieving video', 'complete');
       return null;
     }
-  }, [setCurrentPage, updateStatus]);
+  }, [setCurrentPage, updateStatus, isLiveMode]);
   
   // Handle WebSocket connection
   const connectToWebSocket = useCallback((id: string) => {
     try {
-      if (process.env.NODE_ENV === 'development') {
-        // Use mock in development
+      if (!isLiveMode) {
+        // Use mock when not in live mode
         console.log('[LiveVideoGeneration] Using mock log simulator');
         setIsWebSocketConnected(true);
         
@@ -171,7 +171,7 @@ export const useLiveVideoGeneration = () => {
           }
         );
       } else {
-        // Use real WebSocket in production
+        // Use real WebSocket in live mode
         webSocketRef.current = createLogWebSocket(
           id,
           handleLogMessage,
@@ -195,15 +195,7 @@ export const useLiveVideoGeneration = () => {
       setIsWebSocketConnected(false);
       startStatusPolling(id);
     }
-  }, [handleLogMessage, startStatusPolling, getVideo, updateStatus]);
-  
-  // Auto-start generation when in live mode and on processing page
-  useEffect(() => {
-    if (isLiveMode && currentPage === 'processing' && !jobId && !isGenerating) {
-      console.log('[LiveVideoGeneration] Auto-starting generation in live mode');
-      startGeneration();
-    }
-  }, [isLiveMode, currentPage, jobId, isGenerating]);
+  }, [handleLogMessage, startStatusPolling, getVideo, updateStatus, isLiveMode]);
   
   // Start video generation
   const startGeneration = useCallback(async () => {
@@ -223,12 +215,16 @@ export const useLiveVideoGeneration = () => {
       
       let response;
       
-      if (process.env.NODE_ENV === 'development') {
-        // Use mock in development
-        response = await liveApiClient.mock.startGeneration(inputValue);
-      } else {
-        // Use real API in production
+      try {
+        // Always try to use the real API in live mode
+        console.log('[LiveVideoGeneration] Connecting to backend API at localhost:8000');
         response = await liveApiClient.startGeneration(inputValue);
+      } catch (apiError) {
+        console.error('[LiveVideoGeneration] Error connecting to backend API:', apiError);
+        
+        // Fallback to mock if real API fails
+        console.log('[LiveVideoGeneration] Falling back to mock API');
+        response = await liveApiClient.mock.startGeneration(inputValue);
       }
       
       const { job_id } = response;
@@ -249,6 +245,18 @@ export const useLiveVideoGeneration = () => {
       return null;
     }
   }, [isLiveMode, inputValue, cleanup, updateStatus, connectToWebSocket]);
+  
+  // Auto-start generation when in live mode and on processing page
+  useEffect(() => {
+    if (isLiveMode && currentPage === 'processing' && !jobId && !isGenerating) {
+      console.log('[LiveVideoGeneration] Auto-starting generation in live mode');
+      // Use a timeout to avoid the circular dependency issue
+      const timer = setTimeout(() => {
+        startGeneration();
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [isLiveMode, currentPage, jobId, isGenerating]);
   
   // Download the generated video
   const downloadVideo = useCallback(() => {

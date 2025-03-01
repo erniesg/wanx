@@ -12,7 +12,7 @@ const ProcessingPage: React.FC = () => {
   const logContainerRef = useRef<HTMLDivElement>(null);
   
   // Get live logs if in live mode
-  const { logs: liveLogs, isWebSocketConnected } = useLiveVideoGeneration();
+  const { logs: liveLogs, isWebSocketConnected, error } = useLiveVideoGeneration();
 
   // Use live logs if in live mode
   useEffect(() => {
@@ -154,6 +154,18 @@ const ProcessingPage: React.FC = () => {
                 )}
               </div>
             </div>
+            
+            {error && (
+              <div className="bg-red-900/30 border border-red-500 text-red-300 p-3 mb-4 rounded-sm">
+                <p className="font-medium">Error:</p>
+                <p>{error}</p>
+                <p className="mt-2 text-sm">
+                  {isLiveMode ? 
+                    "Make sure your backend server is running at http://localhost:8000" : 
+                    "An error occurred in demo mode"}
+                </p>
+              </div>
+            )}
             
             <div 
               ref={logContainerRef}
