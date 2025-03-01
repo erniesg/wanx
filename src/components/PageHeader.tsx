@@ -12,14 +12,12 @@ const PageHeader: React.FC<PageHeaderProps> = ({
 }) => {
   return (
     <div className="text-center mb-12">
-      <h1 className="text-5xl md:text-7xl font-orbitron mb-4">
+      <h1 className="text-5xl md:text-7xl font-orbitron mb-2">
         万象更新
       </h1>
-      <div className="glitch-container">
-        <h2 className="text-3xl md:text-4xl font-orbitron text-secondary-cyan mb-4">
-          <span className="glitch-text" data-text="Everything Has Changed">Everything Has Changed</span>
-        </h2>
-      </div>
+      <h2 className="text-3xl md:text-4xl font-orbitron text-secondary-cyan mb-4">
+        Everything Has Changed
+      </h2>
       {title && (
         <h3 className="text-2xl md:text-3xl font-orbitron mt-8 text-white">
           {title}

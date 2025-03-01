@@ -32,8 +32,13 @@ const CompletionPage: React.FC = () => {
   };
 
   const handleDownload = () => {
-    // In a real app, this would trigger a download
-    alert('Downloading video...');
+    // Create an anchor element and trigger download
+    const downloadLink = document.createElement('a');
+    downloadLink.href = "https://github.com/erniesg/wanx/raw/refs/heads/main/backend/assets/demo/output.mp4";
+    downloadLink.download = "tech_industry_update.mp4";
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
   };
 
   const handleGoHome = () => {
@@ -81,7 +86,7 @@ const CompletionPage: React.FC = () => {
             <div className="flex flex-col md:flex-row items-center gap-6">
               <div className="video-player md:w-1/3 w-full aspect-[9/16] mx-auto">
                 <video 
-                  src={videoUrl} 
+                  src="https://github.com/erniesg/wanx/raw/refs/heads/main/backend/assets/demo/output.mp4" 
                   controls 
                   className="w-full h-full object-cover"
                   autoPlay

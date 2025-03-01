@@ -24,6 +24,7 @@ const createDefaultScene = (): Scene => ({
 const createDefaultGlobalSettings = (): GlobalSettings => ({
   title: 'TECH INDUSTRY UPDATE',
   coverImage: null,
+  coverImageUrl: 'https://raw.githubusercontent.com/erniesg/wanx/refs/heads/main/backend/assets/demo/coverimage.png',
   atmosphere: 'energetic',
   style: 'modern'
 });
@@ -84,7 +85,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     progress: 0,
     message: 'Initializing...'
   },
-  videoUrl: '',
+  videoUrl: 'https://github.com/erniesg/wanx/raw/refs/heads/main/backend/assets/demo/output.mp4',
 
   setGlobalSettings: (settings) => {
     set((state) => ({
@@ -244,7 +245,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           setTimeout(() => {
             set({
               currentPage: 'completion',
-              videoUrl: 'https://assets.mixkit.co/videos/preview/mixkit-digital-animation-of-a-city-at-night-11748-large.mp4',
+              videoUrl: 'https://github.com/erniesg/wanx/raw/refs/heads/main/backend/assets/demo/output.mp4',
               processingStatus: {
                 step: 'complete',
                 progress: 100,
