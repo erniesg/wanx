@@ -126,15 +126,21 @@ export const useLiveVideoGeneration = () => {
       
       let videoData: Blob | string;
       
-      if (process.env.NODE_ENV === 'development' && !isLiveMode) {
-        // Use mock in development when not in live mode
+      if (!isLiveMode) {
+        // Use mock when not in live mode
         videoData = await liveApiClient.mock.getVideo();
         setVideoUrl(videoData as string);
       } else {
-        // Use real API in production or live mode
-        videoData = await liveApiClient.getVideo(id);
-        const url = URL.createObjectURL(videoData as Blob);
-        setVideoUrl(url);
+        // Use real API in live mode
+        try {
+          videoData = await liveApiClient.getVideo(id);
+          const url = URL.createObjectURL(videoData as Blob);
+          setVideoUrl(url);
+        } catch (error) {
+          console.error('[LiveVideoGeneration] Error getting video, falling back to mock:', error);
+          videoData = await liveApiClient.mock.getVideo();
+          setVideoUrl(videoData as string);
+        }
       }
       
       updateStatus(100, 'Video generation complete!', 'complete');
@@ -142,7 +148,11 @@ export const useLiveVideoGeneration = () => {
       
       // Cleanup job resources
       if (isLiveMode) {
-        await liveApiClient.cleanup(id);
+        try {
+          await liveApiClient.cleanup(id);
+        } catch (error) {
+          console.error('[LiveVideoGeneration] Error cleaning up job:', error);
+        }
       }
       
       return videoData;
@@ -171,27 +181,33 @@ export const useLiveVideoGeneration = () => {
           }
         );
       } else {
-        // Use real WebSocket in live mode
-        webSocketRef.current = createLogWebSocket(
-          id,
-          handleLogMessage,
-          (error) => {
-            console.error('[LiveVideoGeneration] WebSocket error:', error);
-            setError('WebSocket connection error. Falling back to polling.');
-            setIsWebSocketConnected(false);
-            startStatusPolling(id);
-          },
-          async () => {
-            console.log('[LiveVideoGeneration] Generation complete via WebSocket');
-            updateStatus(90, 'Generation complete, retrieving video...', 'rendering');
-            await getVideo(id);
-          }
-        );
-        
-        setIsWebSocketConnected(true);
+        // Use real SSE connection in live mode
+        try {
+          webSocketRef.current = createLogWebSocket(
+            id,
+            handleLogMessage,
+            (error) => {
+              console.error('[LiveVideoGeneration] SSE error:', error);
+              setError('Stream connection error. Falling back to polling.');
+              setIsWebSocketConnected(false);
+              startStatusPolling(id);
+            },
+            async () => {
+              console.log('[LiveVideoGeneration] Generation complete via SSE');
+              updateStatus(90, 'Generation complete, retrieving video...', 'rendering');
+              await getVideo(id);
+            }
+          );
+          
+          setIsWebSocketConnected(true);
+        } catch (error) {
+          console.error('[LiveVideoGeneration] Error connecting to SSE, falling back to polling:', error);
+          setIsWebSocketConnected(false);
+          startStatusPolling(id);
+        }
       }
     } catch (error) {
-      console.error('[LiveVideoGeneration] Error connecting to WebSocket:', error);
+      console.error('[LiveVideoGeneration] Error in stream setup:', error);
       setIsWebSocketConnected(false);
       startStatusPolling(id);
     }
@@ -233,7 +249,7 @@ export const useLiveVideoGeneration = () => {
       console.log(`[LiveVideoGeneration] Generation started with job ID: ${job_id}`);
       updateStatus(20, 'Generation started, connecting to log stream...', 'analyzing');
       
-      // Connect to WebSocket for log streaming
+      // Connect to stream for log streaming
       connectToWebSocket(job_id);
       
       return job_id;
@@ -252,11 +268,14 @@ export const useLiveVideoGeneration = () => {
       console.log('[LiveVideoGeneration] Auto-starting generation in live mode');
       // Use a timeout to avoid the circular dependency issue
       const timer = setTimeout(() => {
-        startGeneration();
-      }, 0);
+        startGeneration().catch(err => {
+          console.error('[LiveVideoGeneration] Auto-start error:', err);
+          setError(err instanceof Error ? err.message : 'Failed to auto-start generation');
+        });
+      }, 100);
       return () => clearTimeout(timer);
     }
-  }, [isLiveMode, currentPage, jobId, isGenerating]);
+  }, [isLiveMode, currentPage, jobId, isGenerating, startGeneration]);
   
   // Download the generated video
   const downloadVideo = useCallback(() => {

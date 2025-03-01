@@ -5,62 +5,71 @@ import { ProcessingStatus } from '../types';
 const LIVE_API_BASE_URL = 'http://localhost:8000';
 
 export const LIVE_API_ENDPOINTS = {
-  START_GENERATION: `${LIVE_API_BASE_URL}/generate_video`,
+  START_GENERATION: `${LIVE_API_BASE_URL}/generate_video_stream`,  // Changed to match backend endpoint
   JOB_STATUS: `${LIVE_API_BASE_URL}/job_status`,
-  GET_VIDEO: `${LIVE_API_BASE_URL}/video`,
+  GET_VIDEO: `${LIVE_API_BASE_URL}/get_video`,  // Changed to match backend endpoint
   CLEANUP: `${LIVE_API_BASE_URL}/cleanup`,
 };
 
-// WebSocket connection for log streaming
+// Changed to use Server-Sent Events (SSE) instead of WebSockets
 export const createLogWebSocket = (jobId: string, onMessage: (log: string) => void, onError: (error: any) => void, onComplete: () => void) => {
   try {
-    const wsUrl = `ws://localhost:8000/ws/logs/${jobId}`;
-    console.log(`[LiveAPI] Connecting to WebSocket: ${wsUrl}`);
+    const sseUrl = `${LIVE_API_BASE_URL}/stream_logs/${jobId}`;
+    console.log(`[LiveAPI] Connecting to SSE stream: ${sseUrl}`);
     
-    const socket = new WebSocket(wsUrl);
+    const eventSource = new EventSource(sseUrl);
     
-    socket.onopen = () => {
-      console.log('[LiveAPI] WebSocket connection established');
+    eventSource.onopen = () => {
+      console.log('[LiveAPI] SSE connection established');
     };
     
-    socket.onmessage = (event) => {
+    eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         
-        if (data.log) {
+        if (data.message) {
+          // Handle message format from backend
+          onMessage(data.message);
+          
+          // Check for completion message
+          if (data.status === 'complete') {
+            console.log('[LiveAPI] Generation complete');
+            onComplete();
+            eventSource.close();
+          }
+        } else if (data.log) {
+          // Handle alternative log format
+          onMessage(data.log);
+          
           // Check for special log messages
           if (data.log.startsWith('DONE:')) {
             console.log('[LiveAPI] Generation complete');
             onComplete();
+            eventSource.close();
           } else if (data.log.startsWith('ERROR:')) {
             console.error('[LiveAPI] Error:', data.log.substring(6));
             onError(new Error(data.log.substring(6)));
-          } else {
-            onMessage(data.log);
           }
         }
       } catch (error) {
-        console.error('[LiveAPI] Error parsing WebSocket message:', error);
+        console.error('[LiveAPI] Error parsing SSE message:', error);
         onMessage(event.data);
       }
     };
     
-    socket.onerror = (error) => {
-      console.error('[LiveAPI] WebSocket error:', error);
+    eventSource.onerror = (error) => {
+      console.error('[LiveAPI] SSE error:', error);
       onError(error);
-    };
-    
-    socket.onclose = () => {
-      console.log('[LiveAPI] WebSocket connection closed');
+      eventSource.close();
     };
     
     return {
       close: () => {
-        socket.close();
+        eventSource.close();
       }
     };
   } catch (error) {
-    console.error('[LiveAPI] Error creating WebSocket:', error);
+    console.error('[LiveAPI] Error creating SSE connection:', error);
     onError(error);
     return {
       close: () => {}

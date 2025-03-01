@@ -149,7 +149,7 @@ const ProcessingPage: React.FC = () => {
                 </span>
                 {isLiveMode && (
                   <span className={`text-xs px-2 py-1 rounded-full ${isWebSocketConnected ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'}`}>
-                    {isWebSocketConnected ? 'WebSocket Connected' : 'Polling Fallback'}
+                    {isWebSocketConnected ? 'Stream Connected' : 'Polling Fallback'}
                   </span>
                 )}
               </div>
