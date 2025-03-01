@@ -6,6 +6,7 @@ from tts import text_to_speech,  sanitize_filename
 import os
 import re
 from generate_script import transform_to_script
+from create_captions import add_bottom_captions
 
 # Configure logging
 # Create logs directory in backend
@@ -99,13 +100,16 @@ def create_tiktok(content: str):
     output_file = f"{project_name}_tiktok.mp4"
     logger.info(f"Combining audio and videos into {output_file}")
     final_video = combine_project(project_name)
-    
     if final_video:
-        logger.info(f"TikTok video created successfully: {final_video}")
+        # Add captions to the final video
+        logger.info(f"Adding captions to the video")
+        captioned_video = add_bottom_captions(final_video)
+        logger.info(f"TikTok video with captions created: {captioned_video}")
+        return captioned_video
     else:
         logger.error("Failed to create TikTok video")
-    
-    return final_video
+        return None
+
 
 
 if __name__ == "__main__":
