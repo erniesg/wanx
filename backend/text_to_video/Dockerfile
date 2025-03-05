@@ -12,9 +12,9 @@ COPY . /app
 # Set the PYTHONPATH environment variable
 ENV PYTHONPATH=/app
 
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip freeze
+# Don't install requirements here - we'll do it in Modal
+# RUN pip install --no-cache-dir -r requirements.txt
+# RUN pip freeze
 
 # Make port 8000 available to the world outside this container
 EXPOSE 8000
