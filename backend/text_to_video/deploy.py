@@ -21,8 +21,18 @@ else:
 # Define the image using debian_slim base
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    .apt_install(["ffmpeg"])
-    # Install core dependencies first with exact versions
+    # Install system dependencies including ImageMagick
+    .apt_install([
+        "ffmpeg",
+        "imagemagick",
+        "libmagick++-dev",
+        "ghostscript"  # Required for some ImageMagick operations
+    ])
+    # Configure ImageMagick policy to allow text operations
+    .run_commands([
+        'bash -c \'echo "<policymap><policy domain=\\"path\\" rights=\\"read | write\\" pattern=\\"@*\\"/><policy domain=\\"path\\" rights=\\"read | write\\" pattern=\\"/tmp/*\\"/><policy domain=\\"coder\\" rights=\\"read | write\\" pattern=\\"PNG\\"/><policy domain=\\"coder\\" rights=\\"read | write\\" pattern=\\"LABEL\\"/><policy domain=\\"coder\\" rights=\\"read | write\\" pattern=\\"TEXT\\"/></policymap>" > /etc/ImageMagick-6/policy.xml\'',
+        'chmod 1777 /tmp'
+    ])
     .pip_install([
         "pydantic==2.10.6",
         "instructor==1.7.2",
@@ -46,11 +56,46 @@ image = (
 # Define the ASGI app function
 @app.function(
     image=image,
-    secrets=[secrets]  # Add secrets to the function
+    secrets=[secrets]
 )
 @modal.asgi_app()
 def app_function():
     import sys
+
+    # Test ImageMagick configuration
+    try:
+        import subprocess
+        print("\n--- Testing ImageMagick Configuration ---")
+
+        # Test 1: Check ImageMagick version
+        version_cmd = subprocess.run(['convert', '-version'], capture_output=True, text=True)
+        print("ImageMagick version:", version_cmd.stdout.split('\n')[0])
+
+        # Test 2: Check policy file
+        with open('/etc/ImageMagick-6/policy.xml', 'r') as f:
+            print("\nImageMagick policy file contents:")
+            print(f.read())
+
+        # Test 3: Test text-to-image conversion
+        test_cmd = subprocess.run(
+            ['convert', 'label:test', '/tmp/test.png'],
+            capture_output=True,
+            text=True
+        )
+        if test_cmd.returncode == 0:
+            print("\nText-to-image conversion test: SUCCESS")
+        else:
+            print("\nText-to-image conversion test: FAILED")
+            print("Error:", test_cmd.stderr)
+
+        # Test 4: Check /tmp permissions
+        tmp_perms = subprocess.run(['ls', '-ld', '/tmp'], capture_output=True, text=True)
+        print("\n/tmp directory permissions:", tmp_perms.stdout)
+
+    except Exception as e:
+        print("Error during ImageMagick tests:", str(e))
+
+    print("\n--- End ImageMagick Tests ---\n")
 
     # Debug prints
     print("Current working directory:", os.getcwd())
@@ -78,16 +123,11 @@ def app_function():
     sys.path.append(os.getcwd())
 
     try:
-        from main import app as fastapi_app
+        from text_to_video.main import app as fastapi_app
         return fastapi_app
     except ImportError as e:
-        print(f"Failed to import from main directly: {e}")
-        try:
-            from text_to_video.main import app as fastapi_app
-            return fastapi_app
-        except ImportError as e:
-            print(f"Failed to import from text_to_video.main: {e}")
-            raise
+        print(f"Failed to import from text_to_video.main: {e}")
+        raise
 
 # Run the app
 if __name__ == "__main__":
