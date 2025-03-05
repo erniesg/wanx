@@ -9,6 +9,10 @@ from typing import Dict, List
 import json
 import uuid
 
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+
 from create_tiktok import create_tiktok
 
 app = FastAPI(title="Simple API")
