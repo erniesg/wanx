@@ -2,7 +2,7 @@
 import { useAppStore } from '../store';
 
 // API endpoints
-const API_BASE_URL = 'https://api.wanx.io';
+const API_BASE_URL = 'https://berlayar-ai--wanx-backend-app-function.modal.run';
 
 export const API_ENDPOINTS = {
   GENERATE_VIDEO: `${API_BASE_URL}/generate_video`,

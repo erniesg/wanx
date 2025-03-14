@@ -2,7 +2,7 @@
 import { ProcessingStatus } from '../types';
 
 // API endpoints for live mode
-const LIVE_API_BASE_URL = 'http://localhost:8000';
+const LIVE_API_BASE_URL = 'https://gimme-ai-test.erniesg.workers.dev';
 
 export const LIVE_API_ENDPOINTS = {
   START_GENERATION: `${LIVE_API_BASE_URL}/generate_video_stream`,
@@ -17,22 +17,22 @@ export const createLogWebSocket = (jobId: string, onMessage: (log: string) => vo
   try {
     const sseUrl = `${LIVE_API_BASE_URL}/stream_logs/${jobId}`;
     console.log(`[LiveAPI] Connecting to SSE stream: ${sseUrl}`);
-    
+
     const eventSource = new EventSource(sseUrl);
-    
+
     eventSource.onopen = () => {
       console.log('[LiveAPI] SSE connection established');
     };
-    
+
     eventSource.onmessage = (event) => {
       try {
         console.log('[LiveAPI] SSE message received:', event.data);
         const data = JSON.parse(event.data);
-        
+
         if (data.message) {
           // Handle message format from backend
           onMessage(data.message);
-          
+
           // Check for completion message
           if (data.message.includes('Video generation complete')) {
             console.log('[LiveAPI] Generation complete from message');
@@ -41,7 +41,7 @@ export const createLogWebSocket = (jobId: string, onMessage: (log: string) => vo
         } else if (data.log) {
           // Handle alternative log format
           onMessage(data.log);
-          
+
           // Check for special log messages
           if (data.log.startsWith('DONE:') || data.log.includes('Video generation complete')) {
             console.log('[LiveAPI] Generation complete');
@@ -62,13 +62,13 @@ export const createLogWebSocket = (jobId: string, onMessage: (log: string) => vo
         onMessage(event.data);
       }
     };
-    
+
     eventSource.onerror = (error) => {
       console.error('[LiveAPI] SSE error:', error);
       onError(error);
       eventSource.close();
     };
-    
+
     return {
       close: () => {
         eventSource.close();
@@ -98,7 +98,7 @@ export const liveApiClient = {
   startGeneration: async (content: string): Promise<{ job_id: string, status: string }> => {
     try {
       console.log('[LiveAPI] Starting generation with content:', content.substring(0, 100) + '...');
-      
+
       const response = await fetch(LIVE_API_ENDPOINTS.START_GENERATION, {
         method: 'POST',
         headers: {
@@ -106,7 +106,7 @@ export const liveApiClient = {
         },
         body: JSON.stringify({ content }),
       });
-      
+
       const processedResponse = await handleApiResponse(response);
       return await processedResponse.json();
     } catch (error) {
@@ -114,12 +114,12 @@ export const liveApiClient = {
       throw error;
     }
   },
-  
+
   // Check job status
   checkJobStatus: async (jobId: string): Promise<{ status: string, progress?: number, message?: string, logs?: string[], video_path?: string }> => {
     try {
       console.log(`[LiveAPI] Checking job status for: ${jobId}`);
-      
+
       const response = await fetch(`${LIVE_API_ENDPOINTS.JOB_STATUS}/${jobId}`);
       const processedResponse = await handleApiResponse(response);
       return await processedResponse.json();
@@ -128,22 +128,22 @@ export const liveApiClient = {
       throw error;
     }
   },
-  
+
   // Get generated video
   getVideo: async (jobId: string): Promise<Blob | string> => {
     try {
       console.log(`[LiveAPI] Getting video for job: ${jobId}`);
-      
+
       // First check job status to get the video path
       const status = await liveApiClient.checkJobStatus(jobId);
-      
+
       if (status.status !== 'complete') {
         throw new Error('Video generation not complete yet');
       }
-      
+
       if (status.video_path) {
         console.log(`[LiveAPI] Video path from status: ${status.video_path}`);
-        
+
         // Extract the filename from the path
         const videoFileName = status.video_path.split('/').pop();
         if (videoFileName) {
@@ -152,7 +152,7 @@ export const liveApiClient = {
             // First try the videos endpoint
             const directVideoUrl = `${LIVE_API_ENDPOINTS.VIDEOS}/${videoFileName}`;
             console.log(`[LiveAPI] Trying direct video URL: ${directVideoUrl}`);
-            
+
             // Test if the URL is accessible
             const testResponse = await fetch(directVideoUrl, { method: 'HEAD' });
             if (testResponse.ok) {
@@ -164,19 +164,19 @@ export const liveApiClient = {
           }
         }
       }
-      
+
       // Fallback to the get_video endpoint
       const response = await fetch(`${LIVE_API_ENDPOINTS.GET_VIDEO}/${jobId}`);
-      
+
       // Check if response is OK
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`);
       }
-      
+
       // Check content type to determine how to handle the response
       const contentType = response.headers.get('content-type');
       console.log(`[LiveAPI] Video response content type: ${contentType}`);
-      
+
       if (contentType && contentType.includes('application/json')) {
         // Handle JSON response (might contain a URL or error)
         const data = await response.json();
@@ -201,12 +201,12 @@ export const liveApiClient = {
       throw error;
     }
   },
-  
+
   // Cleanup job resources
   cleanup: async (jobId: string): Promise<void> => {
     try {
       console.log(`[LiveAPI] Cleaning up job: ${jobId}`);
-      
+
       await fetch(`${LIVE_API_ENDPOINTS.CLEANUP}/${jobId}`, {
         method: 'DELETE',
       }).catch(err => {
@@ -222,28 +222,28 @@ export const liveApiClient = {
       // Non-critical error, so we don't throw
     }
   },
-  
+
   // Mock functions for testing without actual backend
   mock: {
     startGeneration: async (content: string): Promise<{ job_id: string, status: string }> => {
       console.log('[LiveAPI Mock] Starting generation with content:', content.substring(0, 100) + '...');
-      
+
       // Simulate API delay
       await new Promise(resolve => setTimeout(resolve, 1000));
-      
+
       return {
         job_id: `mock-${Date.now()}`,
         status: 'processing'
       };
     },
-    
+
     simulateLogMessages: (onMessage: (log: string) => void, onComplete: () => void) => {
       const logs = [
         "Initializing AI video generation pipeline...",
         "Loading content analysis module...",
-        "Analyzing text structure and semantics...",
+        "Analyzing text structure...",
         "Extracting key themes and topics...",
-        "Generating scene concepts based on content...",
+        "Generating scene concepts...",
         "Creating visual storyboard...",
         "Initializing video generation model...",
         "Rendering scene 1 of 3...",
@@ -259,35 +259,35 @@ export const liveApiClient = {
         "Encoding final video...",
         "Video generation complete!"
       ];
-      
+
       let index = 0;
       const interval = setInterval(() => {
         if (index < logs.length) {
           onMessage(logs[index]);
-          
+
           if (logs[index].startsWith('Video generation complete')) {
             clearInterval(interval);
             onComplete();
           }
-          
+
           index++;
         } else {
           clearInterval(interval);
           onComplete();
         }
       }, 1000);
-      
+
       return {
         stop: () => clearInterval(interval)
       };
     },
-    
+
     getVideo: async (): Promise<string> => {
       console.log('[LiveAPI Mock] Getting mock video');
-      
+
       // Simulate API delay
       await new Promise(resolve => setTimeout(resolve, 1000));
-      
+
       return "https://github.com/erniesg/wanx/raw/refs/heads/main/backend/assets/demo/output.mp4";
     }
   }
