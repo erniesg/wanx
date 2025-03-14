@@ -1,13 +1,15 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Header, Depends
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 import os
 import traceback
 import asyncio
-from typing import Dict, List
+from typing import Dict, List, Optional
 import json
 import uuid
+import logging
 
 import sys
 import os
@@ -15,7 +17,24 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 from create_tiktok import create_tiktok
 
-app = FastAPI(title="Simple API")
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
+logger = logging.getLogger("api")
+
+# Define security scheme for API key authentication
+MODAL_KEY_HEADER = APIKeyHeader(name="Modal-Key", auto_error=False)
+MODAL_SECRET_HEADER = APIKeyHeader(name="Modal-Secret", auto_error=False)
+X_AUTH_SOURCE_HEADER = APIKeyHeader(name="X-Auth-Source", auto_error=False)
+X_AUTH_MODE_HEADER = APIKeyHeader(name="X-Auth-Mode", auto_error=False)
+
+app = FastAPI(
+    title="Video Generation API",
+    description="API for generating videos from text content with authentication required",
+    version="1.0.0",
+)
 
 # Add CORS middleware to allow frontend requests
 app.add_middleware(
@@ -26,9 +45,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Middleware to log request headers
+@app.middleware("http")
+async def log_request_headers(request: Request, call_next):
+    """Middleware to log all request headers"""
+    # Log the request method and URL
+    logger.info(f"Request: {request.method} {request.url}")
+
+    # Log all headers
+    headers = dict(request.headers)
+    # Redact sensitive information if needed
+    if "authorization" in headers:
+        headers["authorization"] = "REDACTED"
+    if "Modal-Secret" in headers:
+        headers["Modal-Secret"] = "REDACTED"
+
+    logger.info(f"Headers: {json.dumps(headers, indent=2)}")
+
+    # Process the request and get the response
+    response = await call_next(request)
+
+    # Log the response status code
+    logger.info(f"Response status: {response.status_code}")
+
+    return response
+
 # Store for active jobs and their status messages
 active_jobs: Dict[str, List[str]] = {}
 job_results: Dict[str, str] = {}
+
+# Authentication dependency
+async def verify_authentication(
+    auth_source: Optional[str] = Depends(X_AUTH_SOURCE_HEADER),
+    auth_mode: Optional[str] = Depends(X_AUTH_MODE_HEADER)
+):
+    """
+    Verify authentication headers.
+
+    Requires:
+    - X-Auth-Source must be "gimme-ai-gateway"
+    - X-Auth-Mode must be either "admin" or "free"
+    """
+
+    # Check for required auth source
+    if not auth_source or auth_source not in ["gimme-ai", "gimme-ai-gateway"]:
+        logger.warning(f"Invalid auth source: {auth_source}")
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. Invalid authentication source."
+        )
+
+    # Check for valid auth mode
+    if not auth_mode or auth_mode not in ["admin", "free"]:
+        logger.warning(f"Invalid auth mode: {auth_mode}")
+        raise HTTPException(
+            status_code=403,
+            detail="Access denied. Invalid authentication mode."
+        )
+
+    logger.info(f"Authentication successful: source={auth_source}, mode={auth_mode}")
+    return True
 
 # Add this at the beginning of the file, after imports
 # Ensure all necessary directories exist
@@ -55,14 +131,16 @@ backend_dir, assets_dir = ensure_directories()
 class VideoRequest(BaseModel):
     content: str
 
-@app.get("/")
+@app.get("/", dependencies=[Depends(verify_authentication)])
 def read_root():
-    return {"message": "Welcome to the Simple API"}
+    return {"message": "Welcome to the Video Generation API"}
 
-@app.post("/generate_video")
+@app.post("/generate_video", dependencies=[Depends(verify_authentication)])
 async def generate_video(request: VideoRequest):
     """
     Generate a video synchronously (blocks until complete)
+
+    Requires authentication with Modal-Key and Modal-Secret headers.
     """
     try:
         # Generate the video using your create_tiktok function
@@ -84,10 +162,12 @@ async def generate_video(request: VideoRequest):
         print(f"Detailed error: {error_details}")
         raise HTTPException(status_code=500, detail=f"Error generating video: {str(e)}")
 
-@app.post("/generate_video_stream")
+@app.post("/generate_video_stream", dependencies=[Depends(verify_authentication)])
 async def generate_video_stream(request: VideoRequest, background_tasks: BackgroundTasks):
     """
     Start a video generation job and return a job ID for status tracking
+
+    Requires authentication with Modal-Key and Modal-Secret headers.
     """
     job_id = str(uuid.uuid4())
     active_jobs[job_id] = []
@@ -118,9 +198,13 @@ async def run_video_generation(job_id, content, log_callback):
         print(f"Error in background task: {error_details}")
         active_jobs[job_id].append(f"Error: {str(e)}")
 
-@app.get("/stream_logs/{job_id}")
+@app.get("/stream_logs/{job_id}", dependencies=[Depends(verify_authentication)])
 async def stream_logs(job_id: str):
-    """Stream log messages for a specific job"""
+    """
+    Stream log messages for a specific job
+
+    Requires authentication with Modal-Key and Modal-Secret headers.
+    """
     if job_id not in active_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -147,9 +231,13 @@ async def stream_logs(job_id: str):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-@app.get("/get_video/{job_id}")
+@app.get("/get_video/{job_id}", dependencies=[Depends(verify_authentication)])
 async def get_video(job_id: str):
-    """Get the completed video for a job"""
+    """
+    Get the completed video for a job
+
+    Requires authentication with Modal-Key and Modal-Secret headers.
+    """
     if job_id not in job_results:
         raise HTTPException(status_code=404, detail="Video not found or generation not complete")
 
@@ -164,9 +252,13 @@ async def get_video(job_id: str):
         filename=os.path.basename(video_path)
     )
 
-@app.get("/job_status/{job_id}")
+@app.get("/job_status/{job_id}", dependencies=[Depends(verify_authentication)])
 async def job_status(job_id: str):
-    """Get the current status of a job"""
+    """
+    Get the current status of a job
+
+    Requires authentication with Modal-Key and Modal-Secret headers.
+    """
     if job_id not in active_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -179,10 +271,14 @@ async def job_status(job_id: str):
         "video_path": job_results.get(job_id) if is_complete else None
     }
 
-@app.get("/videos/{filename}")
-@app.head("/videos/{filename}")  # Also allow HEAD requests
+@app.get("/videos/{filename}", dependencies=[Depends(verify_authentication)])
+@app.head("/videos/{filename}", dependencies=[Depends(verify_authentication)])  # Also allow HEAD requests
 async def get_video_by_filename(filename: str):
-    """Serve a video file directly by filename"""
+    """
+    Serve a video file directly by filename
+
+    Requires authentication with Modal-Key and Modal-Secret headers.
+    """
     # Construct the path to the video file
     video_path = os.path.join(assets_dir, "videos", filename)
 
@@ -197,9 +293,13 @@ async def get_video_by_filename(filename: str):
         filename=filename
     )
 
-@app.delete("/cleanup/{job_id}")
+@app.delete("/cleanup/{job_id}", dependencies=[Depends(verify_authentication)])
 async def cleanup_job(job_id: str):
-    """Clean up resources for a completed job"""
+    """
+    Clean up resources for a completed job
+
+    Requires authentication with Modal-Key and Modal-Secret headers.
+    """
     if job_id not in active_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 

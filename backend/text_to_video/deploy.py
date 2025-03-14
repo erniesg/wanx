@@ -1,6 +1,14 @@
 # deploy.py
 import modal
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
+logger = logging.getLogger("modal-deploy")
 
 # Create a Modal app
 app = modal.App("wanx-backend")
@@ -12,10 +20,10 @@ project_root = os.path.dirname(os.path.dirname(current_dir))  # Go up two levels
 # Load secrets from .env file in project root
 env_path = os.path.join(project_root, ".env")
 if os.path.exists(env_path):
-    print(f"Loading secrets from {env_path}")
+    logger.info(f"Loading secrets from {env_path}")
     secrets = modal.Secret.from_dotenv(env_path)
 else:
-    print(f"Warning: .env file not found at {env_path}")
+    logger.warning(f"Warning: .env file not found at {env_path}")
     secrets = modal.Secret.from_dict({})
 
 # Define the image using debian_slim base
@@ -61,6 +69,15 @@ image = (
 @modal.asgi_app()
 def app_function():
     import sys
+    import logging
+
+    # Configure logging for the FastAPI application
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    )
+    logger = logging.getLogger("modal-app")
+    logger.info("Starting FastAPI application in Modal")
 
     # Test ImageMagick configuration
     try:
@@ -124,11 +141,13 @@ def app_function():
 
     try:
         from text_to_video.main import app as fastapi_app
+        logger.info("Successfully imported FastAPI app")
         return fastapi_app
     except ImportError as e:
-        print(f"Failed to import from text_to_video.main: {e}")
+        logger.error(f"Failed to import from text_to_video.main: {e}")
         raise
 
 # Run the app
 if __name__ == "__main__":
+    logger.info("Deploying application to Modal")
     app.run()
