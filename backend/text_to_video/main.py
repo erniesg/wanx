@@ -20,9 +20,9 @@ from create_tiktok import create_tiktok
 # Import individual components for stepwise processing
 from generate_script import transform_to_script as generate_script
 from tts import text_to_speech
-from create_captions import create_captions
-from ttv import generate_video
-from editor import combine_audio_video_captions
+from create_captions import add_bottom_captions as create_captions
+from ttv import text_to_video as generate_video
+from editor import combine_audio_video as combine_audio_video_captions
 
 # Configure logging
 logging.basicConfig(
