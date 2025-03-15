@@ -2,14 +2,15 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Header, De
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Dict, List, Optional, Any
 import os
 import traceback
 import asyncio
-from typing import Dict, List, Optional
 import json
 import uuid
 import logging
+from datetime import datetime
 
 import sys
 import os
@@ -136,24 +137,46 @@ def ensure_directories():
 # Call this function to ensure directories exist
 backend_dir, assets_dir = ensure_directories()
 
+# Define Pydantic models for request/response validation
+class Options(BaseModel):
+    style: Optional[str] = None
+    duration: Optional[str] = None
+    resolution: Optional[str] = None
+    voice: Optional[str] = None
+
+class Metadata(BaseModel):
+    source: Optional[str] = None
+    timestamp: Optional[str] = None
+
 class VideoRequest(BaseModel):
     content: str
+    options: Optional[Options] = None
+    metadata: Optional[Metadata] = None
 
-class ScriptResponse(BaseModel):
-    job_id: str
-    script: str
+class WorkflowResponse(BaseModel):
+    status: str = "started"
 
-class AudioResponse(BaseModel):
+class WorkflowInitResponse(BaseModel):
     job_id: str
-    audio_path: str
+    status: str = "initialized"
 
-class CaptionsResponse(BaseModel):
-    job_id: str
-    captions_path: str
+class StepStatus(BaseModel):
+    script: str = "pending"
+    audio: str = "pending"
+    captions: str = "pending"
+    base_video: str = "pending"
+    final_video: str = "pending"
 
-class VideoResponse(BaseModel):
+class WorkflowStatusResponse(BaseModel):
     job_id: str
-    video_path: str
+    status: str
+    steps: StepStatus
+    progress: int = 0
+    error: Optional[str] = None
+
+class StepStatusResponse(BaseModel):
+    status: str
+    details: Dict[str, Any] = {}
 
 @app.get("/", dependencies=[Depends(verify_authentication)])
 def read_root():
@@ -344,9 +367,46 @@ async def cleanup_job(job_id: str):
 
     return {"status": "success", "message": f"Cleaned up resources for job {job_id}"}
 
+# Helper functions for workflow status management
+def calculate_overall_status(job_data):
+    """Calculate the overall status based on step statuses"""
+    steps = job_data.get("steps", {})
+
+    # If any step failed, the overall status is failed
+    if "failed" in steps.values():
+        return "failed"
+
+    # If all steps are completed, the overall status is completed
+    if all(status == "completed" for status in steps.values()):
+        return "completed"
+
+    # If any step is processing, the overall status is processing
+    if "processing" in steps.values():
+        return "processing"
+
+    # Otherwise, the status is pending
+    return "pending"
+
+def calculate_progress(job_data):
+    """Calculate the overall progress percentage"""
+    steps = job_data.get("steps", {})
+    total_steps = len(steps)
+    if total_steps == 0:
+        return 0
+
+    # Count completed steps
+    completed_steps = sum(1 for status in steps.values() if status == "completed")
+
+    # Count processing steps (count as half complete)
+    processing_steps = sum(0.5 for status in steps.values() if status == "processing")
+
+    # Calculate progress percentage
+    progress = int((completed_steps + processing_steps) / total_steps * 100)
+    return min(progress, 100)  # Ensure progress doesn't exceed 100%
+
 # New stepwise workflow endpoints for Cloudflare integration
 
-@app.post("/workflow/init", dependencies=[Depends(verify_authentication)])
+@app.post("/workflow/init", dependencies=[Depends(verify_authentication)], response_model=WorkflowInitResponse)
 async def init_workflow(request: VideoRequest):
     """
     Initialize a video generation workflow and return a job ID.
@@ -354,177 +414,322 @@ async def init_workflow(request: VideoRequest):
     """
     job_id = str(uuid.uuid4())
     active_jobs[job_id] = ["Workflow initialized"]
-    job_data[job_id] = {"content": request.content}
+
+    # Initialize job data with content, options, and metadata
+    job_data[job_id] = {
+        "content": request.content,
+        "options": request.options.dict() if request.options else {},
+        "metadata": request.metadata.dict() if request.metadata else {},
+        "created_at": datetime.now().isoformat(),
+        "steps": {
+            "script": "pending",
+            "audio": "pending",
+            "captions": "pending",
+            "base_video": "pending",
+            "final_video": "pending"
+        }
+    }
+
+    logger.info(f"Initialized workflow with job_id: {job_id}")
 
     return {"job_id": job_id, "status": "initialized"}
 
-@app.post("/workflow/generate_script/{job_id}", dependencies=[Depends(verify_authentication)])
-async def workflow_generate_script(job_id: str):
+@app.post("/workflow/generate_script/{job_id}", dependencies=[Depends(verify_authentication)], response_model=WorkflowResponse)
+async def workflow_generate_script(job_id: str, background_tasks: BackgroundTasks):
     """
     Step 1: Generate a script from the content.
     """
     if job_id not in job_data:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    content = job_data[job_id].get("content")
-    if not content:
-        raise HTTPException(status_code=400, detail="Content not found for this job")
+    # Update step status to processing
+    job_data[job_id]["steps"]["script"] = "processing"
+    active_jobs[job_id].append("Generating script...")
 
+    # Start script generation in background
+    background_tasks.add_task(generate_script_task, job_id)
+
+    return {"status": "started"}
+
+async def generate_script_task(job_id: str):
+    """Background task to generate script"""
     try:
-        active_jobs[job_id].append("Generating script...")
+        content = job_data[job_id].get("content")
+        if not content:
+            raise ValueError("Content not found for this job")
+
+        # Generate script
         script = generate_script(content)
+
+        if not script:
+            raise ValueError("Failed to generate script")
+
+        # Store script in job data
         job_data[job_id]["script"] = script
+        job_data[job_id]["steps"]["script"] = "completed"
+        job_data[job_id]["script_details"] = {
+            "length": len(script),
+            "completed_at": datetime.now().isoformat()
+        }
         active_jobs[job_id].append("Script generation complete")
 
-        return {"job_id": job_id, "script": script}
     except Exception as e:
         error_details = traceback.format_exc()
-        print(f"Error generating script: {error_details}")
+        logger.error(f"Error generating script: {error_details}")
+        job_data[job_id]["steps"]["script"] = "failed"
+        job_data[job_id]["error"] = f"Script generation failed: {str(e)}"
         active_jobs[job_id].append(f"Error generating script: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error generating script: {str(e)}")
 
-@app.post("/workflow/generate_audio/{job_id}", dependencies=[Depends(verify_authentication)])
-async def workflow_generate_audio(job_id: str):
+@app.post("/workflow/generate_audio/{job_id}", dependencies=[Depends(verify_authentication)], response_model=WorkflowResponse)
+async def workflow_generate_audio(job_id: str, background_tasks: BackgroundTasks):
     """
     Step 2: Generate audio from the script.
     """
     if job_id not in job_data:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    script = job_data[job_id].get("script")
-    if not script:
-        raise HTTPException(status_code=400, detail="Script not found for this job. Run generate_script first.")
+    # Check if script generation is completed
+    if job_data[job_id]["steps"]["script"] != "completed":
+        raise HTTPException(status_code=400, detail="Script generation must complete before generating audio")
 
+    # Update step status to processing
+    job_data[job_id]["steps"]["audio"] = "processing"
+    active_jobs[job_id].append("Generating audio...")
+
+    # Start audio generation in background
+    background_tasks.add_task(generate_audio_task, job_id)
+
+    return {"status": "started"}
+
+async def generate_audio_task(job_id: str):
+    """Background task to generate audio"""
     try:
-        active_jobs[job_id].append("Generating audio...")
+        script = job_data[job_id].get("script")
+        if not script:
+            raise ValueError("Script not found for this job")
+
+        # Generate audio
         audio_path = text_to_speech(script, job_id)
+
+        if not audio_path or not os.path.exists(audio_path):
+            raise ValueError("Failed to generate audio")
+
+        # Store audio path in job data
         job_data[job_id]["audio_path"] = audio_path
+        job_data[job_id]["steps"]["audio"] = "completed"
+        job_data[job_id]["audio_details"] = {
+            "path": audio_path,
+            "filename": os.path.basename(audio_path),
+            "completed_at": datetime.now().isoformat()
+        }
         active_jobs[job_id].append(f"Audio generation complete: {os.path.basename(audio_path)}")
 
-        return {"job_id": job_id, "audio_path": audio_path}
     except Exception as e:
         error_details = traceback.format_exc()
-        print(f"Error generating audio: {error_details}")
+        logger.error(f"Error generating audio: {error_details}")
+        job_data[job_id]["steps"]["audio"] = "failed"
+        job_data[job_id]["error"] = f"Audio generation failed: {str(e)}"
         active_jobs[job_id].append(f"Error generating audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error generating audio: {str(e)}")
 
-@app.post("/workflow/generate_captions/{job_id}", dependencies=[Depends(verify_authentication)])
-async def workflow_generate_captions(job_id: str):
+@app.post("/workflow/generate_captions/{job_id}", dependencies=[Depends(verify_authentication)], response_model=WorkflowResponse)
+async def workflow_generate_captions(job_id: str, background_tasks: BackgroundTasks):
     """
     Step 3: Generate captions from the audio.
     """
     if job_id not in job_data:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    audio_path = job_data[job_id].get("audio_path")
-    script = job_data[job_id].get("script")
+    # Check if audio generation is completed
+    if job_data[job_id]["steps"]["audio"] != "completed":
+        raise HTTPException(status_code=400, detail="Audio generation must complete before generating captions")
 
-    if not audio_path or not script:
-        raise HTTPException(status_code=400, detail="Audio path or script not found for this job. Run previous steps first.")
+    # Update step status to processing
+    job_data[job_id]["steps"]["captions"] = "processing"
+    active_jobs[job_id].append("Generating captions...")
 
+    # Start captions generation in background
+    background_tasks.add_task(generate_captions_task, job_id)
+
+    return {"status": "started"}
+
+async def generate_captions_task(job_id: str):
+    """Background task to generate captions"""
     try:
-        active_jobs[job_id].append("Generating captions...")
+        audio_path = job_data[job_id].get("audio_path")
+        script = job_data[job_id].get("script")
+
+        if not audio_path or not script:
+            raise ValueError("Audio path or script not found for this job")
+
+        # Generate captions
         captions_path = create_captions(audio_path, script, job_id)
+
+        if not captions_path:
+            raise ValueError("Failed to generate captions")
+
+        # Store captions path in job data
         job_data[job_id]["captions_path"] = captions_path
+        job_data[job_id]["steps"]["captions"] = "completed"
+        job_data[job_id]["captions_details"] = {
+            "path": captions_path,
+            "filename": os.path.basename(captions_path),
+            "completed_at": datetime.now().isoformat()
+        }
         active_jobs[job_id].append(f"Captions generation complete: {os.path.basename(captions_path)}")
 
-        return {"job_id": job_id, "captions_path": captions_path}
     except Exception as e:
         error_details = traceback.format_exc()
-        print(f"Error generating captions: {error_details}")
+        logger.error(f"Error generating captions: {error_details}")
+        job_data[job_id]["steps"]["captions"] = "failed"
+        job_data[job_id]["error"] = f"Captions generation failed: {str(e)}"
         active_jobs[job_id].append(f"Error generating captions: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error generating captions: {str(e)}")
 
-@app.post("/workflow/generate_base_video/{job_id}", dependencies=[Depends(verify_authentication)])
-async def workflow_generate_base_video(job_id: str):
+@app.post("/workflow/generate_base_video/{job_id}", dependencies=[Depends(verify_authentication)], response_model=WorkflowResponse)
+async def workflow_generate_base_video(job_id: str, background_tasks: BackgroundTasks):
     """
     Step 4: Generate the base video.
     """
     if job_id not in job_data:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    script = job_data[job_id].get("script")
+    # Check if script generation is completed
+    if job_data[job_id]["steps"]["script"] != "completed":
+        raise HTTPException(status_code=400, detail="Script generation must complete before generating base video")
 
-    if not script:
-        raise HTTPException(status_code=400, detail="Script not found for this job. Run generate_script first.")
+    # Update step status to processing
+    job_data[job_id]["steps"]["base_video"] = "processing"
+    active_jobs[job_id].append("Generating base video...")
 
+    # Start base video generation in background
+    background_tasks.add_task(generate_base_video_task, job_id)
+
+    return {"status": "started"}
+
+async def generate_base_video_task(job_id: str):
+    """Background task to generate base video"""
     try:
-        active_jobs[job_id].append("Generating base video...")
+        script = job_data[job_id].get("script")
+
+        if not script:
+            raise ValueError("Script not found for this job")
+
+        # Generate base video
         video_path = generate_video(script, job_id)
+
+        if not video_path or not os.path.exists(video_path):
+            raise ValueError("Failed to generate base video")
+
+        # Store base video path in job data
         job_data[job_id]["base_video_path"] = video_path
+        job_data[job_id]["steps"]["base_video"] = "completed"
+        job_data[job_id]["base_video_details"] = {
+            "path": video_path,
+            "filename": os.path.basename(video_path),
+            "completed_at": datetime.now().isoformat()
+        }
         active_jobs[job_id].append(f"Base video generation complete: {os.path.basename(video_path)}")
 
-        return {"job_id": job_id, "base_video_path": video_path}
     except Exception as e:
         error_details = traceback.format_exc()
-        print(f"Error generating base video: {error_details}")
+        logger.error(f"Error generating base video: {error_details}")
+        job_data[job_id]["steps"]["base_video"] = "failed"
+        job_data[job_id]["error"] = f"Base video generation failed: {str(e)}"
         active_jobs[job_id].append(f"Error generating base video: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error generating base video: {str(e)}")
 
-@app.post("/workflow/combine_final_video/{job_id}", dependencies=[Depends(verify_authentication)])
-async def workflow_combine_final_video(job_id: str):
+@app.post("/workflow/combine_final_video/{job_id}", dependencies=[Depends(verify_authentication)], response_model=WorkflowResponse)
+async def workflow_combine_final_video(job_id: str, background_tasks: BackgroundTasks):
     """
     Step 5: Combine audio, video, and captions into the final video.
     """
     if job_id not in job_data:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    base_video_path = job_data[job_id].get("base_video_path")
-    audio_path = job_data[job_id].get("audio_path")
-    captions_path = job_data[job_id].get("captions_path")
+    # Check if required steps are completed
+    if job_data[job_id]["steps"]["base_video"] != "completed":
+        raise HTTPException(status_code=400, detail="Base video generation must complete before combining final video")
 
-    if not base_video_path or not audio_path or not captions_path:
-        raise HTTPException(status_code=400, detail="Missing required files for this job. Run previous steps first.")
+    if job_data[job_id]["steps"]["audio"] != "completed":
+        raise HTTPException(status_code=400, detail="Audio generation must complete before combining final video")
 
+    if job_data[job_id]["steps"]["captions"] != "completed":
+        raise HTTPException(status_code=400, detail="Captions generation must complete before combining final video")
+
+    # Update step status to processing
+    job_data[job_id]["steps"]["final_video"] = "processing"
+    active_jobs[job_id].append("Combining final video...")
+
+    # Start final video combination in background
+    background_tasks.add_task(combine_final_video_task, job_id)
+
+    return {"status": "started"}
+
+async def combine_final_video_task(job_id: str):
+    """Background task to combine final video"""
     try:
-        active_jobs[job_id].append("Combining final video...")
+        base_video_path = job_data[job_id].get("base_video_path")
+        audio_path = job_data[job_id].get("audio_path")
+        captions_path = job_data[job_id].get("captions_path")
+
+        if not base_video_path or not audio_path or not captions_path:
+            raise ValueError("Missing required files for final video combination")
+
+        # Combine final video
         final_video_path = combine_audio_video_captions(base_video_path, audio_path, captions_path, job_id)
+
+        if not final_video_path or not os.path.exists(final_video_path):
+            raise ValueError("Failed to combine final video")
+
+        # Store final video path in job data
         job_data[job_id]["final_video_path"] = final_video_path
         job_results[job_id] = final_video_path  # Store in job_results for compatibility with existing endpoints
+        job_data[job_id]["steps"]["final_video"] = "completed"
+        job_data[job_id]["final_video_details"] = {
+            "path": final_video_path,
+            "filename": os.path.basename(final_video_path),
+            "completed_at": datetime.now().isoformat()
+        }
         active_jobs[job_id].append(f"Final video generation complete: {os.path.basename(final_video_path)}")
 
-        return {
-            "job_id": job_id,
-            "final_video_path": final_video_path,
-            "filename": os.path.basename(final_video_path)
-        }
     except Exception as e:
         error_details = traceback.format_exc()
-        print(f"Error combining final video: {error_details}")
+        logger.error(f"Error combining final video: {error_details}")
+        job_data[job_id]["steps"]["final_video"] = "failed"
+        job_data[job_id]["error"] = f"Final video combination failed: {str(e)}"
         active_jobs[job_id].append(f"Error combining final video: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error combining final video: {str(e)}")
 
 @app.get("/workflow/status/{job_id}", dependencies=[Depends(verify_authentication)])
-async def workflow_status(job_id: str):
+async def workflow_status(job_id: str, step: Optional[str] = None):
     """
     Get the current status of a workflow job.
+    Optionally specify a step to get detailed status for that step.
     """
-    if job_id not in active_jobs:
+    if job_id not in job_data:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    is_complete = job_id in job_results
+    if step:
+        # Return status for specific step
+        if step not in job_data[job_id].get("steps", {}):
+            raise HTTPException(status_code=404, detail=f"Step {step} not found")
 
-    # Get the current step based on what data is available
-    current_step = "initialized"
-    if job_data.get(job_id, {}).get("script"):
-        current_step = "script_generated"
-    if job_data.get(job_id, {}).get("audio_path"):
-        current_step = "audio_generated"
-    if job_data.get(job_id, {}).get("captions_path"):
-        current_step = "captions_generated"
-    if job_data.get(job_id, {}).get("base_video_path"):
-        current_step = "base_video_generated"
-    if job_data.get(job_id, {}).get("final_video_path"):
-        current_step = "complete"
+        status = job_data[job_id]["steps"][step]
+        details = job_data[job_id].get(f"{step}_details", {})
 
-    return {
-        "job_id": job_id,
-        "status": "complete" if is_complete else "processing",
-        "current_step": current_step,
-        "logs": active_jobs[job_id],
-        "video_path": job_results.get(job_id) if is_complete else None,
-        "filename": os.path.basename(job_results.get(job_id, "")) if is_complete else None
-    }
+        return StepStatusResponse(
+            status=status,
+            details=details
+        )
+    else:
+        # Return overall status
+        overall_status = calculate_overall_status(job_data[job_id])
+        progress = calculate_progress(job_data[job_id])
+
+        return WorkflowStatusResponse(
+            job_id=job_id,
+            status=overall_status,
+            steps=StepStatus(**job_data[job_id]["steps"]),
+            progress=progress,
+            error=job_data[job_id].get("error")
+        )
 
 # Add this to the startup event
 @app.on_event("startup")
