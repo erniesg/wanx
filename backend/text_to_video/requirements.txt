@@ -14,3 +14,6 @@ openai-whisper
 # rich==13.9.4
 # typer==0.9.4
 elevenlabs==1.52.0
+# Added for HeyGen Workflow
+requests # For API calls
+boto3 # For AWS S3 interaction

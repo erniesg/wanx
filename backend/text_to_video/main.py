@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Header, Depends
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Header, Depends, Response
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
@@ -11,6 +11,7 @@ import json
 import uuid
 import logging
 from datetime import datetime
+from dotenv import load_dotenv  # Add dotenv import
 
 import sys
 import os
@@ -23,6 +24,9 @@ from tts import text_to_speech
 from create_captions import add_bottom_captions as create_captions
 from ttv import text_to_video as generate_video
 from editor import combine_audio_video as combine_audio_video_captions
+
+# Import the new workflow orchestrator
+from heygen_workflow import run_heygen_workflow, check_job_completion, run_assembly_and_captioning, job_data
 
 # Configure logging
 logging.basicConfig(
@@ -82,6 +86,39 @@ active_jobs: Dict[str, List[str]] = {}
 job_results: Dict[str, str] = {}
 # Store for intermediate results in the workflow
 job_data: Dict[str, Dict] = {}
+# Example structure for job_data['some_job_id'] in the HeyGen workflow:
+# {
+#     "workflow_type": "heygen",
+#     "job_id": "some_job_id",
+#     "status": "pending" | "processing" | "assembling" | "captioning" | "completed" | "failed",
+#     "error": str | None,
+#     "creation_time": str (ISO format),
+#     "input_script_path": str,
+#     "parsed_script": dict | None,
+#     "assets": {
+#         "music_path": str | None,
+#         "music_status": "pending" | "completed" | "failed",
+#         "segments": {
+#             "segment_name_1": {
+#                 "type": "heygen" | "pexels",
+#                 "audio_path": str | None,
+#                 "audio_status": "pending" | "completed" | "failed",
+#                 "visual_status": "pending" | "processing" | "completed" | "failed",
+#                 # If type == "heygen":
+#                 "heygen_video_id": str | None,
+#                 "heygen_video_url": str | None,
+#                 "heygen_avatar_id": str,
+#                 # If type == "pexels":
+#                 "pexels_video_paths": list[str] | None,
+#                 "pexels_query": str,
+#             },
+#             "segment_name_2": { ... }
+#         }
+#     },
+#     "final_video_path_raw": str | None, # Before captions
+#     "caption_file_path": str | None,
+#     "final_video_path_captioned": str | None # Final result
+# }
 
 # Authentication dependency
 async def verify_authentication(
@@ -122,11 +159,18 @@ def ensure_directories():
     backend_dir = os.path.dirname(os.path.dirname(__file__))
     assets_dir = os.path.join(backend_dir, "assets")
 
-    # Create directory structure
+    # Create directory structure for original workflow and HeyGen workflow
     directories = [
         os.path.join(assets_dir, "audio", "speech"),
         os.path.join(assets_dir, "videos"),
-        os.path.join(backend_dir, "logs")
+        os.path.join(backend_dir, "logs"),
+        # Add directories for the new HeyGen workflow
+        os.path.join(assets_dir, "heygen_workflow", "temp_audio"),
+        os.path.join(assets_dir, "heygen_workflow", "stock_video"),
+        os.path.join(assets_dir, "heygen_workflow", "heygen_downloads"),
+        os.path.join(assets_dir, "heygen_workflow", "music"),
+        os.path.join(assets_dir, "heygen_workflow", "output"),
+        os.path.join(assets_dir, "heygen_workflow", "captions"), # Added for SRT files
     ]
 
     for directory in directories:
@@ -136,6 +180,9 @@ def ensure_directories():
 
 # Call this function to ensure directories exist
 backend_dir, assets_dir = ensure_directories()
+
+# Load environment variables from .env file
+load_dotenv()  # Call load_dotenv early
 
 # Define Pydantic models for request/response validation
 class Options(BaseModel):
@@ -702,17 +749,28 @@ async def workflow_status(job_id: str, step: Optional[str] = None):
     """
     Get the current status of a workflow job.
     Optionally specify a step to get detailed status for that step.
+    Handles both original step-by-step and new HeyGen workflow types.
     """
     if job_id not in job_data:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    if step:
+    job_info = job_data[job_id]
+    workflow_type = job_info.get("workflow_type", "original") # Default to original if type missing
+
+    if workflow_type == "heygen":
+        # Return tailored status for HeyGen workflow
+        # Basic example: return the whole job_data entry
+        # TODO: Could format this nicer later
+        return job_info
+
+    # --- Original Workflow Status Logic (keep as is) ---
+    elif step:
         # Return status for specific step
-        if step not in job_data[job_id].get("steps", {}):
+        if step not in job_info.get("steps", {}):
             raise HTTPException(status_code=404, detail=f"Step {step} not found")
 
-        status = job_data[job_id]["steps"][step]
-        details = job_data[job_id].get(f"{step}_details", {})
+        status = job_info["steps"][step]
+        details = job_info.get(f"{step}_details", {})
 
         return StepStatusResponse(
             status=status,
@@ -720,16 +778,161 @@ async def workflow_status(job_id: str, step: Optional[str] = None):
         )
     else:
         # Return overall status
-        overall_status = calculate_overall_status(job_data[job_id])
-        progress = calculate_progress(job_data[job_id])
+        overall_status = calculate_overall_status(job_info)
+        progress = calculate_progress(job_info)
 
         return WorkflowStatusResponse(
             job_id=job_id,
             status=overall_status,
-            steps=StepStatus(**job_data[job_id]["steps"]),
+            steps=StepStatus(**job_info["steps"]),
             progress=progress,
-            error=job_data[job_id].get("error")
+            error=job_info.get("error")
         )
+
+# --- HeyGen Webhook Receiver ---
+@app.post("/webhooks/heygen")
+async def handle_heygen_webhook(request: Request, background_tasks: BackgroundTasks = Depends()):
+    """Handle callbacks from HeyGen API v2"""
+    try:
+        payload = await request.json()
+        logger.info(f"Received HeyGen webhook: {payload}")
+
+        # Extract key information
+        event_type = payload.get("event_type")
+        event_data = payload.get("event_data", {})
+        video_id = event_data.get("video_id")
+        callback_id_str = event_data.get("callback_id") # Crucial for matching job
+
+        # Ignore irrelevant event types early
+        if event_type not in ["avatar_video.success", "avatar_video.fail"]:
+            logger.warning(f"Received and ignoring HeyGen event type: {event_type} | Callback ID: {callback_id_str}")
+            return JSONResponse(content={"status": "received"})
+
+        if not callback_id_str:
+            logger.error(f"Received HeyGen webhook event {event_type} without a callback_id. Cannot update job state.")
+            return JSONResponse(content={"status": "received"})
+
+        # --- Update Job State --- #
+        try:
+            # Split callback_id to get job_id and segment_name
+            parts = callback_id_str.split("__", 1)
+            if len(parts) != 2:
+                logger.error(f"Could not parse job_id and segment_name from callback_id: {callback_id_str}")
+                return JSONResponse(content={"status": "received"})
+            job_id, segment_name = parts
+
+            # Find the job and segment in our shared state
+            if job_id in job_data and segment_name in job_data[job_id].get("assets", {}).get("segments", {}):
+                segment_state = job_data[job_id]["assets"]["segments"][segment_name]
+
+                # Update job status based on the event
+                if event_type == "avatar_video.success":
+                    status = "success"
+                    video_url = event_data.get("url")
+                    segment_state["visual_status"] = "completed"
+                    segment_state["heygen_video_url"] = video_url
+                    segment_state.pop("error", None) # Clear previous error if any
+                    logger.info(f"HeyGen Success | Job: {job_id} | Segment: {segment_name} | Video ID: {video_id} | URL: {video_url}")
+                    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] HeyGen video completed for {segment_name}.")
+
+                    # Check if all assets are now ready for this job
+                    if check_job_completion(job_id, job_data): # Pass job_data to checker
+                        logger.info(f"[{job_id}] All assets ready. Triggering assembly and captioning.")
+                        # Trigger assembly in the background, passing the specific job's data
+                        current_job_data_snapshot = job_data.get(job_id, {}).copy() # Get a copy of the data for the task
+                        if current_job_data_snapshot:
+                            background_tasks.add_task(run_assembly_and_captioning, job_id, current_job_data_snapshot)
+                        else:
+                            logger.error(f"[{job_id}] Could not retrieve job data snapshot for background task.")
+                        # TODO: Remove this warning once background task confirmed working
+                        # logger.warning(f"[{job_id}] Assembly triggering logic needs implementation (e.g., via BackgroundTasks).")
+
+                elif event_type == "avatar_video.fail":
+                    status = "failed"
+                    # Try to get the specific message, fall back to default
+                    error_message = event_data.get("msg", event_data.get("error", "Unknown failure reason"))
+                    segment_state["visual_status"] = "failed"
+                    segment_state["error"] = error_message
+                    logger.error(f"HeyGen Failure | Job: {job_id} | Segment: {segment_name} | Video ID: {video_id} | Error: {error_message}")
+                    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: HeyGen video failed for {segment_name}: {error_message}")
+                    # Optionally update overall job status here too
+                    # job_data[job_id]["status"] = "failed"
+                    # job_data[job_id]["error"] = f"HeyGen segment {segment_name} failed: {error_message}"
+
+                # Check completion and potentially trigger next step
+                if check_job_completion(job_id):
+                    logger.info(f"[{job_id}] All assets ready. Triggering assembly and captioning.")
+                    # Run assembly in background to avoid blocking webhook response
+                    # Need BackgroundTasks dependency here
+                    # Get BackgroundTasks instance - requires modification to endpoint signature
+                    # For now, log that it SHOULD trigger. Actual triggering needs endpoint change.
+                    logger.warning(f"[{job_id}] TODO: Need BackgroundTasks in webhook handler to trigger assembly.")
+                    # Example (requires adding background_tasks: BackgroundTasks = Depends() to endpoint):
+                    # background_tasks.add_task(run_assembly_and_captioning, job_id)
+                else:
+                    logger.info(f"[{job_id}] Job not yet ready for assembly after segment '{segment_name}' update.")
+
+            else:
+                logger.error(f"Webhook received for unknown job_id '{job_id}' or segment_name '{segment_name}'. Callback ID: {callback_id_str}")
+                # Still return 200 to HeyGen, but log the error
+
+        except Exception as e:
+            logger.error(f"Error updating job state for callback_id {callback_id_str}: {e}", exc_info=True)
+            # Don't return 500 to HeyGen if possible, just log our internal error
+
+        # --- End Update Job State ---
+
+        # Future step: Find the job in active_jobs/job_data using callback_id and update its status
+    except json.JSONDecodeError:
+        raw_body = await request.body()
+        logger.error(f"Failed to decode HeyGen webhook JSON. Raw body: {raw_body.decode()}")
+        return JSONResponse(content={"status": "received"})
+    except Exception as e:
+        logger.error(f"Error processing HeyGen webhook: {e}", exc_info=True)
+        # Still return 200 to HeyGen to avoid retries if possible,
+        # but log the internal error.
+        return JSONResponse(content={"status": "received"})
+
+    # Respond quickly to HeyGen
+    return JSONResponse(content={"status": "received"})
+
+# Allow OPTIONS requests for CORS preflight
+@app.options("/webhooks/heygen")
+async def options_heygen_webhook():
+    return JSONResponse(content={"status": "ok"}, headers={
+        "Access-Control-Allow-Origin": "*", # Be more specific in production
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    })
+# --- End HeyGen Webhook Receiver ---
+
+# --- Temporary Test Endpoint for HeyGen Workflow ---
+@app.post("/testing/start_heygen_workflow/{script_filename}", dependencies=[Depends(verify_authentication)])
+async def test_start_heygen_workflow(script_filename: str, background_tasks: BackgroundTasks):
+    """
+    TEMPORARY endpoint to trigger the HeyGen workflow for testing.
+    Uses a script filename (e.g., 'script2.md') from the 'public/' directory.
+    Requires NGROK_PUBLIC_URL env var to be set for webhooks.
+    """
+    job_id = f"heygen_job_{uuid.uuid4()}"
+    logger.info(f"Received request to start HeyGen workflow test with job_id: {job_id}")
+
+    # Construct the full path to the script in the public directory
+    # Assuming 'public' is at the root of the workspace
+    workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__))) # Navigate up from backend/text_to_video
+    script_path = os.path.join(workspace_root, "public", script_filename)
+
+    if not os.path.exists(script_path):
+        logger.error(f"Script file not found at calculated path: {script_path}")
+        raise HTTPException(status_code=404, detail=f"Script file '{script_filename}' not found in public directory.")
+
+    # Add the workflow task to run in the background
+    background_tasks.add_task(run_heygen_workflow, job_id, script_path)
+
+    logger.info(f"Added HeyGen workflow task to background for job_id: {job_id}")
+
+    return {"job_id": job_id, "status": "initiated", "message": "HeyGen workflow started in background."}
+# --- End Temporary Test Endpoint ---
 
 # Add this to the startup event
 @app.on_event("startup")
