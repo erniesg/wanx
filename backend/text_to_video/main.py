@@ -28,6 +28,9 @@ from editor import combine_audio_video as combine_audio_video_captions
 # Import the new workflow orchestrator
 from heygen_workflow import run_heygen_workflow, check_job_completion, run_assembly_and_captioning, job_data
 
+# Import Argil client for potential use (e.g., webhook verification, though not strictly needed for receiver)
+# from backend.text_to_video.argil_client import list_argil_webhooks, create_argil_webhook # Placeholder for now
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -896,7 +899,6 @@ async def handle_heygen_webhook(request: Request, background_tasks: BackgroundTa
     # Respond quickly to HeyGen
     return JSONResponse(content={"status": "received"})
 
-# Allow OPTIONS requests for CORS preflight
 @app.options("/webhooks/heygen")
 async def options_heygen_webhook():
     return JSONResponse(content={"status": "ok"}, headers={
@@ -905,6 +907,103 @@ async def options_heygen_webhook():
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
     })
 # --- End HeyGen Webhook Receiver ---
+
+# --- Argil Webhook Receiver ---
+@app.post("/webhooks/argil")
+async def handle_argil_webhook(request: Request, background_tasks: BackgroundTasks = Depends()):
+    """Handle callbacks from Argil API"""
+    try:
+        payload = await request.json()
+        logger.info(f"Received Argil webhook: {json.dumps(payload, indent=2)}")
+
+        event_type = payload.get("event")
+        event_data = payload.get("data", {})
+        video_id = event_data.get("videoId")
+        # Assuming callback_id is passed in extras like: {"callback_id": "jobid__segmentname"}
+        extras = event_data.get("extras", {})
+        callback_id_str = extras.get("callback_id")
+
+        if event_type not in ["VIDEO_GENERATION_SUCCESS", "VIDEO_GENERATION_FAILED"]:
+            logger.warning(f"Received and ignoring Argil event type: {event_type} | Callback ID: {callback_id_str}")
+            return JSONResponse(content={"status": "received", "message": "Event type ignored"})
+
+        if not callback_id_str:
+            logger.error(f"Received Argil webhook event {event_type} for video {video_id} without a callback_id in extras. Cannot update job state.")
+            return JSONResponse(content={"status": "received", "message": "Missing callback_id in extras"})
+
+        try:
+            parts = callback_id_str.split("__", 1)
+            if len(parts) != 2:
+                logger.error(f"Could not parse job_id and segment_name from Argil callback_id: {callback_id_str}")
+                return JSONResponse(content={"status": "received", "message": "Invalid callback_id format"})
+            job_id, segment_name = parts
+
+            if job_id in job_data and job_data[job_id].get("assets", {}).get("segments", {}).get(segment_name):
+                # Ensure the segment type is Argil, though callback_id uniqueness should handle this
+                # if job_data[job_id]["assets"]["segments"][segment_name].get("type") != "argil":
+                #     logger.warning(f"Argil webhook for non-Argil segment? Job: {job_id}, Segment: {segment_name}. Ignoring.")
+                #     return JSONResponse(content={"status": "received", "message": "Segment type mismatch"})
+
+                segment_state = job_data[job_id]["assets"]["segments"][segment_name]
+
+                if event_type == "VIDEO_GENERATION_SUCCESS":
+                    video_url = event_data.get("videoUrl") # Argil uses videoUrl
+                    segment_state["visual_status"] = "completed"
+                    segment_state["argil_video_url"] = video_url # Store the Argil video URL
+                    segment_state.pop("error", None)
+                    logger.info(f"Argil Success | Job: {job_id} | Segment: {segment_name} | Video ID: {video_id} | URL: {video_url}")
+                    if job_id not in active_jobs: active_jobs[job_id] = [] # Ensure log list exists
+                    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Argil video completed for {segment_name}.")
+
+                elif event_type == "VIDEO_GENERATION_FAILED":
+                    # Argil payload for failure might not have a specific error message in event_data directly.
+                    # The main video object (if fetched via GET /videos/{id}) might have failureReason.
+                    # For now, we'll log a generic message and the video_id.
+                    error_message = f"Argil video generation failed for videoId {video_id}. Event: {event_data.get('videoName', 'N/A')}"
+                    segment_state["visual_status"] = "failed"
+                    segment_state["error"] = error_message
+                    logger.error(f"Argil Failure | Job: {job_id} | Segment: {segment_name} | Video ID: {video_id} | Message: {error_message}")
+                    if job_id not in active_jobs: active_jobs[job_id] = []
+                    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: Argil video failed for {segment_name}: {error_message}")
+                    # Optionally update overall job status
+                    # job_data[job_id]["status"] = "failed"
+                    # job_data[job_id]["error"] = f"Argil segment {segment_name} failed: {error_message}"
+
+                # Check for overall job completion and trigger assembly if ready
+                if check_job_completion(job_id, job_data): # Pass job_data
+                    logger.info(f"[{job_id}] All assets ready after Argil segment update. Triggering assembly and captioning.")
+                    current_job_data_snapshot = job_data.get(job_id, {}).copy()
+                    if current_job_data_snapshot:
+                        background_tasks.add_task(run_assembly_and_captioning, job_id, current_job_data_snapshot)
+                    else:
+                        logger.error(f"[{job_id}] Could not retrieve job data snapshot for background assembly task after Argil update.")
+                else:
+                    logger.info(f"[{job_id}] Job not yet ready for assembly after Argil segment '{segment_name}' update.")
+
+            else:
+                logger.error(f"Argil webhook received for unknown job_id '{job_id}' or segment_name '{segment_name}'. Callback ID: {callback_id_str}")
+
+        except Exception as e:
+            logger.error(f"Error processing Argil callback_id {callback_id_str} or updating job state: {e}", exc_info=True)
+
+    except json.JSONDecodeError:
+        raw_body = await request.body()
+        logger.error(f"Failed to decode Argil webhook JSON. Raw body: {raw_body.decode()}")
+        return JSONResponse(content={"status": "error", "message": "Invalid JSON"}, status_code=400)
+    except Exception as e:
+        logger.error(f"Error processing Argil webhook: {e}", exc_info=True)
+        return JSONResponse(content={"status": "error", "message": "Internal server error"}, status_code=500)
+
+    return JSONResponse(content={"status": "received"})
+
+@app.options("/webhooks/argil")
+async def options_argil_webhook():
+    return JSONResponse(content={"status": "ok"}, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key", # Added X-Api-Key if Argil sends it
+    })
+# --- End Argil Webhook Receiver ---
 
 # --- Temporary Test Endpoint for HeyGen Workflow ---
 @app.post("/testing/start_heygen_workflow/{script_filename}", dependencies=[Depends(verify_authentication)])
