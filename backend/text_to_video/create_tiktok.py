@@ -1,12 +1,12 @@
 import logging
-from editor import combine_audio_video, combine_project
-from utils import get_audio_length
-from video_guy import create_video_content, generate_videos
-from tts import text_to_speech,  sanitize_filename
+from .editor import combine_audio_video, combine_project
+from .utils import get_audio_length
+from .video_guy import create_video_content, generate_videos
+from .tts import text_to_speech, sanitize_filename
 import os
 import re
-from generate_script import transform_to_script
-from create_captions import add_bottom_captions
+from .generate_script import transform_to_script
+from .create_captions import add_bottom_captions
 
 # Configure logging
 # Create logs directory in backend

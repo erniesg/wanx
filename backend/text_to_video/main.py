@@ -11,25 +11,36 @@ import json
 import uuid
 import logging
 from datetime import datetime
-from dotenv import load_dotenv  # Add dotenv import
+from dotenv import load_dotenv
+from contextlib import asynccontextmanager # Import asynccontextmanager
 
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+# Corrected sys.path.append - this should ideally point to the parent of 'backend'
+# so that 'from backend.text_to_video...' works if you ever run scripts from outside 'wanx'
+# but doesn't hurt.
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from create_tiktok import create_tiktok
+from .create_tiktok import create_tiktok
 # Import individual components for stepwise processing
-from generate_script import transform_to_script as generate_script
-from tts import text_to_speech
-from create_captions import add_bottom_captions as create_captions
-from ttv import text_to_video as generate_video
-from editor import combine_audio_video as combine_audio_video_captions
+from .generate_script import transform_to_script as generate_script_func
+from .tts import text_to_speech
+from .create_captions import add_bottom_captions as create_captions_func
+from .ttv import text_to_video as generate_video_func
+from .editor import combine_audio_video as combine_audio_video_captions_func
 
 # Import the new workflow orchestrator
-from heygen_workflow import run_heygen_workflow, check_job_completion, run_assembly_and_captioning, job_data
+from .heygen_workflow import run_heygen_workflow, check_job_completion
+from .argil_workflow import run_argil_workflow
+
+# Import S3 client for direct use if any (though mostly within workflows now)
+# from .s3_client import get_s3_client, ensure_s3_bucket, upload_to_s3
+
+# Import editor functions for assembly
+from .editor import assemble_heygen_video, assemble_argil_video
 
 # Import Argil client for potential use (e.g., webhook verification, though not strictly needed for receiver)
-# from backend.text_to_video.argil_client import list_argil_webhooks, create_argil_webhook # Placeholder for now
+from backend.text_to_video.argil_client import list_argil_webhooks, create_argil_webhook
 
 # Configure logging
 logging.basicConfig(
@@ -44,10 +55,102 @@ MODAL_SECRET_HEADER = APIKeyHeader(name="Modal-Secret", auto_error=False)
 X_AUTH_SOURCE_HEADER = APIKeyHeader(name="X-Auth-Source", auto_error=False)
 X_AUTH_MODE_HEADER = APIKeyHeader(name="X-Auth-Mode", auto_error=False)
 
+# Ensure all necessary directories exist (function definition moved slightly earlier)
+def ensure_directories():
+    """Create all necessary directories for the application"""
+    backend_dir = os.path.dirname(__file__) # Corrected: backend_dir is the current file's dir
+    assets_dir = os.path.join(backend_dir, "..", "assets") # Go up one level to reach assets relative to backend_dir
+
+    # Create directory structure for original workflow and HeyGen workflow
+    directories = [
+        os.path.join(assets_dir, "audio", "speech"),
+        os.path.join(assets_dir, "videos"),
+        os.path.join(backend_dir, "..", "logs"), # Logs relative to project root might be better
+        # HeyGen workflow dirs
+        os.path.join(assets_dir, "heygen_workflow", "temp_audio"),
+        os.path.join(assets_dir, "heygen_workflow", "stock_video"),
+        os.path.join(assets_dir, "heygen_workflow", "heygen_downloads"),
+        os.path.join(assets_dir, "heygen_workflow", "music"),
+        os.path.join(assets_dir, "heygen_workflow", "output"),
+        os.path.join(assets_dir, "heygen_workflow", "captions"),
+        # Argil workflow dirs
+        os.path.join(assets_dir, "argil_workflow", "temp_audio"),
+        os.path.join(assets_dir, "argil_workflow", "stock_video"),
+        os.path.join(assets_dir, "argil_workflow", "argil_downloads"), # For downloaded Argil clips
+        os.path.join(assets_dir, "argil_workflow", "music"),
+        os.path.join(assets_dir, "argil_workflow", "output"),
+        os.path.join(assets_dir, "argil_workflow", "captions"),
+    ]
+
+    for directory in directories:
+        os.makedirs(directory, exist_ok=True)
+
+    # Return paths relative to the backend/text_to_video dir might not be needed globally
+    # return backend_dir, assets_dir
+
+# Define the lifespan context manager
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Code to run on startup
+    logger.info("Application startup: Ensuring directories exist...")
+    ensure_directories()
+    load_dotenv()  # Load environment variables on startup
+    logger.info("Loaded environment variables.")
+
+    # --- Add Argil Webhook Check/Registration --- #
+    argil_api_key = os.getenv("ARGIL_API_KEY")
+    ngrok_url = os.getenv("NGROK_PUBLIC_URL")
+    target_webhook_events = sorted(["VIDEO_GENERATION_SUCCESS", "VIDEO_GENERATION_FAILED"])
+
+    if not argil_api_key:
+        logger.warning("ARGIL_API_KEY not set. Skipping Argil webhook registration.")
+    elif not ngrok_url:
+        logger.warning("NGROK_PUBLIC_URL not set. Skipping Argil webhook registration.")
+    else:
+        webhook_callback_url = f"{ngrok_url.rstrip('/')}/webhooks/argil"
+        logger.info(f"Checking for existing Argil webhook for URL: {webhook_callback_url}")
+
+        webhook_found = False
+        try:
+            list_resp = list_argil_webhooks(argil_api_key)
+            if list_resp and list_resp.get("success"):
+                for wh in list_resp.get("data", []):
+                    # Check URL and ensure the required events are present (order might differ)
+                    if wh.get("callbackUrl") == webhook_callback_url and \
+                       sorted(wh.get("events", [])) == target_webhook_events:
+                        logger.info(f"Found existing Argil webhook: ID {wh.get('id')}")
+                        webhook_found = True
+                        break
+            else:
+                 logger.error(f"Failed to list Argil webhooks: {list_resp.get('error', 'Unknown error')}")
+
+            if not webhook_found:
+                logger.info(f"No suitable Argil webhook found. Attempting to create one...")
+                create_resp = create_argil_webhook(
+                    api_key=argil_api_key,
+                    callback_url=webhook_callback_url,
+                    events=target_webhook_events # Pass the sorted list
+                )
+                if create_resp and create_resp.get("success"):
+                    logger.info(f"Successfully created Argil webhook: ID {create_resp.get('webhook_id')}")
+                else:
+                    logger.error(f"Failed to create Argil webhook: {create_resp.get('error', 'Unknown error')}. Details: {create_resp.get('details', '')}")
+
+        except Exception as e:
+            logger.error(f"An error occurred during Argil webhook check/registration: {e}", exc_info=True)
+    # --- End Argil Webhook Check/Registration --- #
+
+    logger.info("Application startup complete.")
+    yield
+    # Code to run on shutdown (if any)
+    logger.info("Application shutdown.")
+
+# Create FastAPI app instance using the lifespan manager
 app = FastAPI(
     title="Video Generation API",
     description="API for generating videos from text content with authentication required",
     version="1.0.0",
+    lifespan=lifespan # Use the new lifespan manager
 )
 
 # Add CORS middleware to allow frontend requests
@@ -154,35 +257,6 @@ async def verify_authentication(
 
     logger.info(f"Authentication successful: source={auth_source}, mode={auth_mode}")
     return True
-
-# Add this at the beginning of the file, after imports
-# Ensure all necessary directories exist
-def ensure_directories():
-    """Create all necessary directories for the application"""
-    backend_dir = os.path.dirname(os.path.dirname(__file__))
-    assets_dir = os.path.join(backend_dir, "assets")
-
-    # Create directory structure for original workflow and HeyGen workflow
-    directories = [
-        os.path.join(assets_dir, "audio", "speech"),
-        os.path.join(assets_dir, "videos"),
-        os.path.join(backend_dir, "logs"),
-        # Add directories for the new HeyGen workflow
-        os.path.join(assets_dir, "heygen_workflow", "temp_audio"),
-        os.path.join(assets_dir, "heygen_workflow", "stock_video"),
-        os.path.join(assets_dir, "heygen_workflow", "heygen_downloads"),
-        os.path.join(assets_dir, "heygen_workflow", "music"),
-        os.path.join(assets_dir, "heygen_workflow", "output"),
-        os.path.join(assets_dir, "heygen_workflow", "captions"), # Added for SRT files
-    ]
-
-    for directory in directories:
-        os.makedirs(directory, exist_ok=True)
-
-    return backend_dir, assets_dir
-
-# Call this function to ensure directories exist
-backend_dir, assets_dir = ensure_directories()
 
 # Load environment variables from .env file
 load_dotenv()  # Call load_dotenv early
@@ -509,7 +583,7 @@ async def generate_script_task(job_id: str):
             raise ValueError("Content not found for this job")
 
         # Generate script
-        script = generate_script(content)
+        script = generate_script_func(content)
 
         if not script:
             raise ValueError("Failed to generate script")
@@ -612,7 +686,7 @@ async def generate_captions_task(job_id: str):
             raise ValueError("Audio path or script not found for this job")
 
         # Generate captions
-        captions_path = create_captions(audio_path, script, job_id)
+        captions_path = create_captions_func(audio_path, script, job_id)
 
         if not captions_path:
             raise ValueError("Failed to generate captions")
@@ -664,7 +738,7 @@ async def generate_base_video_task(job_id: str):
             raise ValueError("Script not found for this job")
 
         # Generate base video
-        video_path = generate_video(script, job_id)
+        video_path = generate_video_func(script, job_id)
 
         if not video_path or not os.path.exists(video_path):
             raise ValueError("Failed to generate base video")
@@ -724,7 +798,7 @@ async def combine_final_video_task(job_id: str):
             raise ValueError("Missing required files for final video combination")
 
         # Combine final video
-        final_video_path = combine_audio_video_captions(base_video_path, audio_path, captions_path, job_id)
+        final_video_path = combine_audio_video_captions_func(base_video_path, audio_path, captions_path, job_id)
 
         if not final_video_path or not os.path.exists(final_video_path):
             raise ValueError("Failed to combine final video")
@@ -794,7 +868,7 @@ async def workflow_status(job_id: str, step: Optional[str] = None):
 
 # --- HeyGen Webhook Receiver ---
 @app.post("/webhooks/heygen")
-async def handle_heygen_webhook(request: Request, background_tasks: BackgroundTasks = Depends()):
+async def handle_heygen_webhook(request: Request, background_tasks: BackgroundTasks):
     """Handle callbacks from HeyGen API v2"""
     try:
         payload = await request.json()
@@ -910,7 +984,7 @@ async def options_heygen_webhook():
 
 # --- Argil Webhook Receiver ---
 @app.post("/webhooks/argil")
-async def handle_argil_webhook(request: Request, background_tasks: BackgroundTasks = Depends()):
+async def handle_argil_webhook(request: Request, background_tasks: BackgroundTasks):
     """Handle callbacks from Argil API"""
     try:
         payload = await request.json()
@@ -974,9 +1048,9 @@ async def handle_argil_webhook(request: Request, background_tasks: BackgroundTas
                     logger.info(f"[{job_id}] All assets ready after Argil segment update. Triggering assembly and captioning.")
                     current_job_data_snapshot = job_data.get(job_id, {}).copy()
                     if current_job_data_snapshot:
-                        background_tasks.add_task(run_assembly_and_captioning, job_id, current_job_data_snapshot)
+                        background_tasks.add_task(run_assembly_and_captioning, job_id, job_data[job_id])
                     else:
-                        logger.error(f"[{job_id}] Could not retrieve job data snapshot for background assembly task after Argil update.")
+                        logger.error(f"[{job_id}] Webhook: Could not retrieve job data snapshot for background assembly task after Argil update for job {job_id}.")
                 else:
                     logger.info(f"[{job_id}] Job not yet ready for assembly after Argil segment '{segment_name}' update.")
 
@@ -999,46 +1073,223 @@ async def handle_argil_webhook(request: Request, background_tasks: BackgroundTas
 @app.options("/webhooks/argil")
 async def options_argil_webhook():
     return JSONResponse(content={"status": "ok"}, headers={
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": "*", # Be more specific in production
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key", # Added X-Api-Key if Argil sends it
     })
 # --- End Argil Webhook Receiver ---
 
-# --- Temporary Test Endpoint for HeyGen Workflow ---
-@app.post("/testing/start_heygen_workflow/{script_filename}", dependencies=[Depends(verify_authentication)])
-async def test_start_heygen_workflow(script_filename: str, background_tasks: BackgroundTasks):
+# --- Workflow Test Endpoints ---
+@app.post("/v2/workflow/heygen/start/{script_filename}", dependencies=[Depends(verify_authentication)])
+async def start_heygen_workflow_v2(script_filename: str, background_tasks: BackgroundTasks):
     """
-    TEMPORARY endpoint to trigger the HeyGen workflow for testing.
+    Endpoint to trigger the HeyGen workflow.
     Uses a script filename (e.g., 'script2.md') from the 'public/' directory.
     Requires NGROK_PUBLIC_URL env var to be set for webhooks.
     """
     job_id = f"heygen_job_{uuid.uuid4()}"
-    logger.info(f"Received request to start HeyGen workflow test with job_id: {job_id}")
+    logger.info(f"Received request to start HeyGen workflow with job_id: {job_id} for script: {script_filename}")
 
-    # Construct the full path to the script in the public directory
-    # Assuming 'public' is at the root of the workspace
-    workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__))) # Navigate up from backend/text_to_video
+    workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
     script_path = os.path.join(workspace_root, "public", script_filename)
 
     if not os.path.exists(script_path):
         logger.error(f"Script file not found at calculated path: {script_path}")
         raise HTTPException(status_code=404, detail=f"Script file '{script_filename}' not found in public directory.")
 
-    # Add the workflow task to run in the background
-    background_tasks.add_task(run_heygen_workflow, job_id, script_path)
-
+    # Pass the global job_data and active_jobs dictionaries to the background task
+    background_tasks.add_task(run_heygen_workflow, job_id, script_path, job_data, active_jobs)
     logger.info(f"Added HeyGen workflow task to background for job_id: {job_id}")
+    return {"job_id": job_id, "status": "initiated", "message": "HeyGen workflow started."}
 
-    return {"job_id": job_id, "status": "initiated", "message": "HeyGen workflow started in background."}
-# --- End Temporary Test Endpoint ---
+@app.post("/v2/workflow/argil/start/{script_filename}", dependencies=[Depends(verify_authentication)])
+async def start_argil_workflow_v2(script_filename: str, background_tasks: BackgroundTasks):
+    """
+    Endpoint to trigger the Argil workflow.
+    Uses a script filename (e.g., 'script2.md') from the 'public/' directory.
+    Requires NGROK_PUBLIC_URL and ARGIL_API_KEY env vars to be set.
+    """
+    job_id = f"argil_job_{uuid.uuid4()}"
+    logger.info(f"Received request to start Argil workflow with job_id: {job_id} for script: {script_filename}")
 
-# Add this to the startup event
-@app.on_event("startup")
-async def startup_event():
-    """Run when the application starts"""
-    ensure_directories()
+    workspace_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    script_path = os.path.join(workspace_root, "public", script_filename)
+
+    if not os.path.exists(script_path):
+        logger.error(f"Script file not found at calculated path: {script_path}")
+        raise HTTPException(status_code=404, detail=f"Script file '{script_filename}' not found in public directory.")
+
+    # Pass the global job_data and active_jobs dictionaries to the background task
+    background_tasks.add_task(run_argil_workflow, job_id, script_path, job_data, active_jobs)
+    logger.info(f"Added Argil workflow task to background for job_id: {job_id}")
+    return {"job_id": job_id, "status": "initiated", "message": "Argil workflow started."}
+
+# --- Assembly and Captioning Runner (called by webhooks after check_job_completion) ---
+# This function is defined in heygen_workflow.py but might be better placed in main.py
+# or a shared utility module if it handles multiple workflow types.
+# For now, let's assume it's available or we redefine/adapt it here.
+
+def run_assembly_and_captioning(job_id: str, current_job_data_for_assembly: Dict[str, Any]):
+    """
+    Orchestrates the video assembly and captioning process for a completed job.
+    Accepts the specific job_data dictionary for the job to perform assembly.
+    This function MODIFIES current_job_data_for_assembly with results.
+    """
+    logger.info(f"[{job_id}] Initiating assembly and captioning. Workflow type: {current_job_data_for_assembly.get('workflow_type')}")
+    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Assembly and captioning process started.")
+    current_job_data_for_assembly["status"] = "assembling"
+
+    raw_video_path = None
+    workflow_type = current_job_data_for_assembly.get("workflow_type")
+
+    try:
+        # Ensure necessary output directories exist based on workflow type
+        # The assembly functions themselves might also create job-specific subdirs
+        # but the base 'output' dir per workflow type should be ensured here or in ensure_directories.
+        if workflow_type == "argil":
+            output_dir = os.path.join(assets_dir, "argil_workflow", "output")
+        elif workflow_type == "heygen":
+            output_dir = os.path.join(assets_dir, "heygen_workflow", "output")
+        else: # Default or original workflow
+            output_dir = os.path.join(assets_dir, "output") # General output
+        os.makedirs(output_dir, exist_ok=True)
+
+        logger.info(f"[{job_id}] Running video assembly for {workflow_type} workflow.")
+
+        if workflow_type == "argil":
+            raw_video_path = assemble_argil_video(
+                job_id=job_id,
+                job_data=current_job_data_for_assembly,
+                final_output_dir=output_dir
+            )
+        elif workflow_type == "heygen":
+            raw_video_path = assemble_heygen_video(
+                job_id=job_id,
+                job_data=current_job_data_for_assembly,
+                final_output_dir=output_dir
+            )
+        else:
+            error_msg = f"Unknown workflow type '{workflow_type}' for job {job_id}. Cannot assemble."
+            logger.error(f"[{job_id}] {error_msg}")
+            current_job_data_for_assembly["status"] = "failed"
+            current_job_data_for_assembly["error"] = error_msg
+            active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+            return
+
+        if not raw_video_path or not os.path.exists(raw_video_path):
+            error_msg = f"Assembly failed or raw video not found for job {job_id} (workflow: {workflow_type})"
+            logger.error(f"[{job_id}] {error_msg}")
+            current_job_data_for_assembly["status"] = "assembly_failed"
+            current_job_data_for_assembly["error"] = error_msg
+            active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+            return
+
+        current_job_data_for_assembly["final_video_path_raw"] = raw_video_path
+        current_job_data_for_assembly["status"] = "assembly_complete"
+        logger.info(f"[{job_id}] Raw video assembly successful: {raw_video_path}")
+        active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Raw video assembly successful: {os.path.basename(raw_video_path)}.")
+
+        # --- Captioning Step (common for all workflows if raw video is produced) ---
+        logger.info(f"[{job_id}] Starting captioning process for {raw_video_path}")
+        current_job_data_for_assembly["status"] = "captioning"
+        active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Generating captions...")
+        try:
+            # Define where SRT files should be stored, possibly per workflow
+            if workflow_type == "argil":
+                captions_base_dir = os.path.join(assets_dir, "argil_workflow", "captions")
+            elif workflow_type == "heygen":
+                captions_base_dir = os.path.join(assets_dir, "heygen_workflow", "captions")
+            else:
+                captions_base_dir = os.path.join(assets_dir, "captions") # General captions
+            os.makedirs(captions_base_dir, exist_ok=True)
+            srt_file_path = os.path.join(captions_base_dir, f"{job_id}.srt")
+
+            # The add_bottom_captions function needs to know where to save the SRT
+            # and what the script content is. Script content should be in current_job_data_for_assembly["parsed_script"]
+            # We might need a more generic caption generation function if create_captions is too specific.
+            # For now, assuming add_bottom_captions is adaptable or we use a placeholder.
+
+            # Placeholder for script text extraction for captions
+            # This needs to be robust. The full script text might be assembled from segments.
+            script_text_for_captions = "Caption script text not fully implemented here. Placeholder."
+            parsed_script_data = current_job_data_for_assembly.get("parsed_script")
+            if parsed_script_data and parsed_script_data.get("full_script_text"): # Assuming full_script_text is available
+                script_text_for_captions = parsed_script_data["full_script_text"]
+            elif parsed_script_data and parsed_script_data.get("script_segments"):
+                # Concatenate voiceovers from segments if full_script_text isn't directly available
+                texts = []
+                ordered_segment_names_for_caption = list(parsed_script_data.get("script_segments", {}).keys())
+                ordered_segment_names_for_caption = [name for name in ordered_segment_names_for_caption if name != "production_notes"]
+                for seg_name in ordered_segment_names_for_caption:
+                    segment = parsed_script_data["script_segments"].get(seg_name)
+                    if segment and segment.get("voiceover"):
+                        texts.append(segment["voiceover"])
+                script_text_for_captions = " ".join(texts)
+
+            # This part needs to be confirmed based on how create_captions function works.
+            # It typically needs an audio file to transcribe, or pre-segmented text with timings.
+            # For now, we use the existing add_bottom_captions which implies Whisper is run on the raw video.
+            # If SRT is already generated from a previous step (e.g. by tts.py or generate_captions.py), use that.
+            caption_file_path = current_job_data_for_assembly.get("caption_file_path") # Check if SRT was pre-generated
+
+            if caption_file_path and os.path.exists(caption_file_path):
+                 logger.info(f"[{job_id}] Using pre-existing SRT file for captions: {caption_file_path}")
+                 captioned_video_path = create_captions_func(raw_video_path, srt_file_path=caption_file_path)
+            elif current_job_data_for_assembly.get("final_video_path_raw") and script_text_for_captions: # Check if raw video audio can be used
+                logger.info(f"[{job_id}] Generating captions by transcribing raw video and aligning with script text...")
+                # This implies add_bottom_captions can take the raw video and script text
+                # to generate and burn captions. This might need adjustment in add_bottom_captions itself.
+                # For a robust solution, a dedicated SRT generation step is better if not using Whisper on final raw audio.
+
+                # Let's assume add_bottom_captions can handle Whisper internally if no SRT is given
+                # or we need a separate create_srt_from_audio function first.
+                # The current create_captions.py takes audio and script, not video.
+                # For simplicity, we'll assume add_bottom_captions can get audio from raw_video_path for Whisper.
+                captioned_video_path = create_captions_func(raw_video_path) # This will run Whisper on the raw_video_path audio
+                # The add_bottom_captions should also save the SRT it generates, and we should store its path.
+                # Let's assume it returns the video path AND saves SRT like: video_path.replace('.mp4', '.srt')
+                generated_srt_path = raw_video_path.replace(".mp4", ".srt")
+                if os.path.exists(generated_srt_path):
+                    current_job_data_for_assembly["caption_file_path"] = generated_srt_path
+                else: # Fallback if SRT naming convention is different
+                    current_job_data_for_assembly["caption_file_path"] = os.path.join(captions_base_dir, f"{job_id}_final.srt")
+
+            else:
+                logger.warning(f"[{job_id}] Cannot generate captions. No pre-existing SRT and not enough info for on-the-fly generation.")
+                raise Exception("Caption generation prerequisites not met.")
+
+
+            if captioned_video_path and os.path.exists(captioned_video_path):
+                current_job_data_for_assembly["final_video_path_captioned"] = captioned_video_path
+                current_job_data_for_assembly["status"] = "completed"
+                logger.info(f"[{job_id}] Captioning successful: {captioned_video_path}")
+                active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Video completed with captions: {os.path.basename(captioned_video_path)}.")
+                job_results[job_id] = captioned_video_path # Store final result for /get_video endpoint
+            else:
+                raise Exception("Captioning function did not return a valid path or file not found.")
+        except Exception as e:
+            error_msg = f"Captioning failed for job {job_id}: {e}"
+            logger.error(f"[{job_id}] {error_msg}", exc_info=True)
+            current_job_data_for_assembly["status"] = "captioning_failed"
+            current_job_data_for_assembly["error"] = error_msg
+            active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+            # If captioning fails, we can still consider the raw video as a partial success
+            if raw_video_path:
+                job_results[job_id] = raw_video_path # Store raw video path
+                current_job_data_for_assembly["status"] = "completed_no_captions"
+                logger.warning(f"[{job_id}] Proceeding with uncaptioned video due to captioning failure.")
+                active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Video completed without captions: {os.path.basename(raw_video_path)}.")
+
+    except Exception as e:
+        error_msg = f"Video assembly or captioning process failed for job {job_id}: {e}"
+        logger.exception(f"[{job_id}] {error_msg}") # Use logger.exception to include traceback
+        current_job_data_for_assembly["status"] = "failed"
+        current_job_data_for_assembly["error"] = error_msg
+        active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+
+    logger.info(f"[{job_id}] Assembly and captioning run finished. Final job status: {current_job_data_for_assembly.get('status', 'unknown')}")
+# --- End Assembly and Captioning Runner ---
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.text_to_video.main:app", host="0.0.0.0", port=8000, reload=True)

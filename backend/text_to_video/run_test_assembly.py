@@ -19,17 +19,11 @@ print(f"Loaded .env from: {dotenv_path}")
 
 # Now import necessary parts (AFTER load_dotenv)
 try:
-    # Import the specific function needed
-    from heygen_workflow import run_assembly_and_captioning
-    # We also need access to the job_data dictionary from main
-    # This is awkward due to global state. A better design would pass job_data around.
-    # For testing, we try to import it. Ensure main.py defines it globally.
-    # NOTE: This import relies on the FastAPI server process having populated job_data
-    #       and NOT having been reloaded since then.
-    from main import job_data
-    print("Successfully imported run_assembly_and_captioning and job_data.")
+    # Import the specific function needed FROM MAIN.PY
+    from main import run_assembly_and_captioning, job_data
+    print("Successfully imported run_assembly_and_captioning and job_data from main.py.")
 except ImportError as e:
-    print(f"ImportError: {e}. Ensure main.py and heygen_workflow.py are accessible.")
+    print(f"ImportError: {e}. Ensure main.py is accessible and defines run_assembly_and_captioning and job_data.")
     print("Make sure you run this script from the project root or adjust sys.path.")
     exit(1)
 except Exception as e:
@@ -55,8 +49,9 @@ async def main():
     # print("Relevant Job Data Snippet:")
     # print(json.dumps(job_data.get(job_id_to_test, {}).get('assets', {}), indent=2))
 
-
-    await run_assembly_and_captioning(job_id_to_test)
+    # Call run_assembly_and_captioning with the job_id and the specific job_data entry
+    # The function in main.py will handle workflow type (HeyGen or Argil) internally
+    await run_assembly_and_captioning(job_id_to_test, job_data[job_id_to_test])
 
     print(f"Assembly process finished for job {job_id_to_test}. Check logs and output folder.")
     # You can inspect job_data[job_id_to_test] here if needed

@@ -475,3 +475,228 @@ def assemble_heygen_video(job_id: str, job_data: dict, final_output_dir: str, bg
 #         print(f"Assembly test successful: {raw_video}")
 #     else:
 #         print("Assembly test failed.")
+
+def assemble_argil_video(job_id: str, job_data: dict, final_output_dir: str, bg_music_volume: float = 0.1) -> str | None:
+    """
+    Assembles the final video for the Argil workflow from generated assets.
+    Downloads Argil videos, composites Pexels segments with their audio,
+    cycles through Pexels clips, and adds background music.
+
+    Args:
+        job_id (str): The ID of the job.
+        job_data (dict): The job's state data containing asset paths and statuses.
+        final_output_dir (str): Directory to save the final raw video.
+        bg_music_volume (float): Volume factor for background music (0.0 to 1.0). Defaults to 0.1.
+
+    Returns:
+        str | None: Path to the assembled (raw, pre-caption) video, or None on failure.
+    """
+    logger.info(f"[{job_id}] Starting assembly for Argil workflow.")
+
+    main_segment_clips = [] # List for final VideoFileClips of each segment
+    all_clips_to_close = [] # Keep track of all clips that need closing
+    output_path = None
+
+    target_width = 720
+    target_height = 1280
+    target_size = (target_width, target_height)
+
+    temp_download_dir = os.path.join(final_output_dir, f"temp_argil_downloads_{job_id}")
+    os.makedirs(temp_download_dir, exist_ok=True)
+    logger.info(f"[{job_id}] Saving downloaded Argil segments to: {temp_download_dir}")
+
+    try:
+        parsed_script = job_data.get("parsed_script")
+        assets = job_data.get("assets", {})
+        segments_info = assets.get("segments", {})
+
+        if not parsed_script or not segments_info:
+            logger.error(f"[{job_id}] Missing parsed_script or segments_info for Argil assembly.")
+            return None
+
+        # Iterate through script segments in the order they appear in the script_segments dictionary
+        # This dictionary should be ordered if Python version is 3.7+ or an OrderedDict is used.
+        # For safety, it's better to sort by original script order if available, or assume script_segments is ordered.
+        # Assuming script_segments keys are ordered as per the script's structure.
+        ordered_segment_names = list(parsed_script.get("script_segments", {}).keys())
+        ordered_segment_names = [name for name in ordered_segment_names if name != "production_notes"]
+
+        for segment_idx, segment_name in enumerate(ordered_segment_names):
+            logger.info(f"[{job_id}] Processing segment {segment_idx + 1}/{len(ordered_segment_names)}: {segment_name}")
+            segment_asset_data = segments_info.get(segment_name)
+            if not segment_asset_data:
+                logger.warning(f"[{job_id}] No asset data found for segment: {segment_name}. Skipping.")
+                continue
+
+            segment_type = segment_asset_data.get("type")
+            processed_segment_clip = None
+
+            if segment_type == "argil":
+                argil_video_url = segment_asset_data.get("argil_video_url")
+                if not argil_video_url:
+                    logger.error(f"[{job_id}] Argil segment '{segment_name}' is missing video URL. Skipping.")
+                    continue
+
+                local_argil_video_path = os.path.join(temp_download_dir, f"argil_{segment_name}.mp4")
+                if not download_video(argil_video_url, local_argil_video_path):
+                    logger.error(f"[{job_id}] Failed to download Argil video for segment '{segment_name}'. Skipping.")
+                    continue
+
+                clip = VideoFileClip(local_argil_video_path)
+                all_clips_to_close.append(clip)
+                # Standardize: Resize and crop to target_size if needed
+                # Example: if clip.size != target_size:
+                # clip = crop(clip.resize(height=target_height), width=target_width, height=target_height, x_center=clip.w/2, y_center=clip.h/2)
+                # For now, assuming Argil videos are already in correct aspect ratio, just resize.
+                if clip.size[0] != target_width or clip.size[1] != target_height:
+                     clip = clip.resize(target_size) # Simple resize
+                processed_segment_clip = clip
+
+            elif segment_type == "pexels":
+                audio_path = segment_asset_data.get("audio_path")
+                pexels_video_paths = segment_asset_data.get("pexels_video_paths", [])
+                pexels_clips_durations = segment_asset_data.get("pexels_clips_durations", [])
+
+                if not audio_path or not os.path.exists(audio_path):
+                    logger.warning(f"[{job_id}] Pexels segment '{segment_name}' missing audio. Will be silent or use only B-roll sound.")
+                    # Decide if we should create silent audio or skip segment
+
+                segment_audio_clip = None
+                if audio_path and os.path.exists(audio_path):
+                    segment_audio_clip = AudioFileClip(audio_path)
+                    all_clips_to_close.append(segment_audio_clip)
+
+                if not pexels_video_paths:
+                    logger.warning(f"[{job_id}] Pexels segment '{segment_name}' has no video paths. Creating black screen if audio exists.")
+                    if segment_audio_clip:
+                        # Create a black screen clip for the duration of the audio
+                        from moviepy.video.compositing.ColorClip import ColorClip
+                        black_clip = ColorClip(size=target_size, color=(0,0,0), duration=segment_audio_clip.duration)
+                        all_clips_to_close.append(black_clip)
+                        processed_segment_clip = black_clip.set_audio(segment_audio_clip)
+                    else:
+                        continue # No audio, no video, skip segment
+                else:
+                    segment_b_roll_clips = []
+                    total_b_roll_duration = 0
+                    for i, pexel_path in enumerate(pexels_video_paths):
+                        try:
+                            duration = pexels_clips_durations[i] if i < len(pexels_clips_durations) else 2.0 # Default duration
+                            pexel_clip = VideoFileClip(pexel_path).subclip(0, duration)
+                            all_clips_to_close.append(pexel_clip)
+                            # Standardize: Resize and crop
+                            if pexel_clip.size[0] != target_width or pexel_clip.size[1] != target_height:
+                                pexel_clip = crop(pexel_clip.resize(height=target_height),
+                                                  width=target_width, height=target_height,
+                                                  x_center=pexel_clip.w/2, y_center=pexel_clip.h/2)
+                            segment_b_roll_clips.append(pexel_clip)
+                            total_b_roll_duration += pexel_clip.duration
+                        except Exception as e:
+                            logger.error(f"[{job_id}] Error processing Pexels clip {pexel_path} for segment '{segment_name}': {e}")
+
+                    if not segment_b_roll_clips:
+                        logger.warning(f"[{job_id}] No Pexels B-roll clips could be processed for segment '{segment_name}'. Using black screen if audio exists.")
+                        if segment_audio_clip:
+                            from moviepy.video.compositing.ColorClip import ColorClip
+                            black_clip = ColorClip(size=target_size, color=(0,0,0), duration=segment_audio_clip.duration)
+                            all_clips_to_close.append(black_clip)
+                            processed_segment_clip = black_clip.set_audio(segment_audio_clip)
+                        else:
+                            continue
+                    else:
+                        concatenated_b_roll = concatenate_videoclips(segment_b_roll_clips, method="compose")
+                        all_clips_to_close.append(concatenated_b_roll) # It's a new clip
+
+                        if segment_audio_clip:
+                            # If B-roll is shorter than audio, loop B-roll
+                            if concatenated_b_roll.duration < segment_audio_clip.duration:
+                                num_loops = math.ceil(segment_audio_clip.duration / concatenated_b_roll.duration)
+                                looped_b_roll_clips = [concatenated_b_roll] * num_loops
+                                concatenated_b_roll = concatenate_videoclips(looped_b_roll_clips, method="compose")
+                                all_clips_to_close.append(concatenated_b_roll) # This is also a new clip
+
+                            # Trim B-roll to audio duration
+                            concatenated_b_roll = concatenated_b_roll.subclip(0, segment_audio_clip.duration)
+                            processed_segment_clip = concatenated_b_roll.set_audio(segment_audio_clip)
+                        else: # No audio, just use the B-roll as is
+                            processed_segment_clip = concatenated_b_roll
+            else:
+                logger.warning(f"[{job_id}] Unknown segment type '{segment_type}' for segment '{segment_name}'. Skipping.")
+                continue
+
+            if processed_segment_clip:
+                main_segment_clips.append(processed_segment_clip)
+                logger.info(f"[{job_id}] Successfully processed segment '{segment_name}' (Type: {segment_type}). Duration: {processed_segment_clip.duration:.2f}s")
+
+        if not main_segment_clips:
+            logger.error(f"[{job_id}] No segments were processed successfully for Argil assembly.")
+            return None
+
+        final_video_no_music = concatenate_videoclips(main_segment_clips, method="compose")
+        all_clips_to_close.append(final_video_no_music)
+        logger.info(f"[{job_id}] All segments concatenated. Total duration before music: {final_video_no_music.duration:.2f}s")
+
+        # Add background music
+        music_path = assets.get("music_path")
+        final_video_with_music = final_video_no_music
+
+        if music_path and os.path.exists(music_path):
+            try:
+                bg_music = AudioFileClip(music_path)
+                all_clips_to_close.append(bg_music)
+
+                # Apply volume adjustment
+                bg_music = bg_music.fx(volumex, bg_music_volume)
+
+                # Loop or trim music to match video duration
+                if bg_music.duration < final_video_no_music.duration:
+                    num_loops = math.ceil(final_video_no_music.duration / bg_music.duration)
+                    bg_music = concatenate_audioclips([bg_music] * num_loops)
+                    all_clips_to_close.append(bg_music) # New clip created by concatenate
+
+                bg_music = bg_music.subclip(0, final_video_no_music.duration)
+
+                # Combine with existing audio (if any)
+                current_audio = final_video_no_music.audio
+                if current_audio: # If there's already audio from segments
+                    all_clips_to_close.append(current_audio)
+                    combined_audio = CompositeAudioClip([current_audio, bg_music])
+                    all_clips_to_close.append(combined_audio)
+                    final_video_with_music = final_video_no_music.set_audio(combined_audio)
+                else: # No existing audio, just set the background music
+                    final_video_with_music = final_video_no_music.set_audio(bg_music)
+
+                logger.info(f"[{job_id}] Background music added from {music_path}")
+            except Exception as e:
+                logger.error(f"[{job_id}] Failed to add background music from {music_path}: {e}. Proceeding without it.")
+        else:
+            logger.info(f"[{job_id}] No background music path provided or file not found. Proceeding without music.")
+
+        output_filename = f"{job_id}_argil_raw_video.mp4"
+        output_path = os.path.join(final_output_dir, output_filename)
+
+        logger.info(f"[{job_id}] Writing final Argil assembled video to: {output_path}")
+        final_video_with_music.write_videofile(output_path, codec="libx264", audio_codec="aac", threads=4, logger='bar')
+        logger.info(f"[{job_id}] Argil Video Assembly successful. Output: {output_path}")
+
+    except Exception as e:
+        logger.exception(f"[{job_id}] Error during Argil video assembly: {e}")
+        output_path = None
+    finally:
+        for clip in all_clips_to_close:
+            try:
+                clip.close()
+            except Exception as e:
+                logger.warning(f"[{job_id}] Error closing a clip during Argil assembly: {e}")
+
+        # Clean up temp download dir for argil videos
+        if os.path.exists(temp_download_dir):
+            try:
+                import shutil
+                shutil.rmtree(temp_download_dir)
+                logger.info(f"[{job_id}] Cleaned up temporary Argil download directory: {temp_download_dir}")
+            except Exception as e:
+                logger.warning(f"[{job_id}] Error cleaning up Argil temp directory {temp_download_dir}: {e}")
+        logger.info(f"[{job_id}] Argil assembly process finished.")
+
+    return output_path

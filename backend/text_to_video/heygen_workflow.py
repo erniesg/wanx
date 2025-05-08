@@ -8,26 +8,13 @@ from typing import Dict, Any
 import uuid
 
 # Import necessary functions from other modules
-from script_parser import parse_script
-from tts import text_to_speech
-from pexels_client import find_and_download_videos
-from freesound_client import find_and_download_music
-from heygen_client import start_avatar_video_generation
+from .script_parser import parse_script
+from .tts import text_to_speech
+from .pexels_client import find_and_download_videos
+from .freesound_client import find_and_download_music
+from .heygen_client import start_avatar_video_generation
 # Import S3 client functions
-from s3_client import get_s3_client, ensure_s3_bucket, upload_to_s3
-
-# Import shared state (ensure main.py defines these)
-# To avoid circular imports, it might be better to pass these
-# as arguments if this becomes a separate module/class later.
-# For now, direct import assuming execution context allows it.
-try:
-    from main import job_data, active_jobs, job_results
-except ImportError:
-    # Fallback for potential direct execution or testing
-    job_data = {}
-    active_jobs = {}
-    job_results = {}
-    print("Warning: Could not import job_data/active_jobs from main. Using local dicts.")
+from .s3_client import get_s3_client, ensure_s3_bucket, upload_to_s3
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -58,7 +45,7 @@ VEST_AVATARS = {
 
 NUM_HEYGEN_SEGMENTS = 2 # How many segments to randomly choose for HeyGen
 
-async def run_heygen_workflow(job_id: str, script_path: str):
+async def run_heygen_workflow(job_id: str, script_path: str, job_data_ref: Dict, active_jobs_ref: Dict):
     """
     Orchestrates the HeyGen video generation workflow.
     Handles parsing, asset generation initiation (audio, visuals, music).
@@ -81,8 +68,8 @@ async def run_heygen_workflow(job_id: str, script_path: str):
             error_msg = f"Failed to ensure S3 bucket '{S3_BUCKET_NAME}' exists or is accessible."
             logger.error(f"[{job_id}] {error_msg} Cannot proceed with HeyGen segments requiring audio upload.")
             # Fail early if bucket is needed and not ready
-            # job_data[job_id]["status"] = "failed"
-            # job_data[job_id]["error"] = error_msg
+            # job_data_ref[job_id]["status"] = "failed"
+            # job_data_ref[job_id]["error"] = error_msg
             # return
             # For now, log error and proceed, upload will fail later
 
@@ -95,8 +82,8 @@ async def run_heygen_workflow(job_id: str, script_path: str):
     else:
         webhook_url = f"{NGROK_PUBLIC_URL.rstrip('/')}/webhooks/heygen"
 
-    # Create initial job state entry
-    job_data[job_id] = {
+    # Create initial job state entry using the passed reference
+    job_data_ref[job_id] = {
         "workflow_type": "heygen",
         "job_id": job_id,
         "status": "processing",
@@ -113,21 +100,23 @@ async def run_heygen_workflow(job_id: str, script_path: str):
         "caption_file_path": None,
         "final_video_path_captioned": None
     }
-    active_jobs[job_id] = [f"[{datetime.now().isoformat()}] Workflow initialized."]
+    # Use the passed active_jobs reference
+    if job_id not in active_jobs_ref: active_jobs_ref[job_id] = []
+    active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Workflow initialized.")
 
     # --- 2. Parse Script ---
     logger.info(f"[{job_id}] Parsing script...")
-    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Parsing script...")
+    active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Parsing script...")
     parsed_script = parse_script(script_path)
     if not parsed_script:
         error_msg = "Failed to parse script."
         logger.error(f"[{job_id}] {error_msg}")
-        job_data[job_id]["status"] = "failed"
-        job_data[job_id]["error"] = error_msg
-        active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+        job_data_ref[job_id]["status"] = "failed"
+        job_data_ref[job_id]["error"] = error_msg
+        active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
         return # Stop processing
-    job_data[job_id]["parsed_script"] = parsed_script
-    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Script parsed successfully.")
+    job_data_ref[job_id]["parsed_script"] = parsed_script
+    active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Script parsed successfully.")
 
     # --- 3. Prepare Segments & Initiate Asset Generation ---
     script_segments = parsed_script.get("script_segments", {})
@@ -136,9 +125,9 @@ async def run_heygen_workflow(job_id: str, script_path: str):
     if not segment_names:
         error_msg = "No script segments found in parsed script (excluding production_notes)."
         logger.error(f"[{job_id}] {error_msg}")
-        job_data[job_id]["status"] = "failed"
-        job_data[job_id]["error"] = error_msg
-        active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+        job_data_ref[job_id]["status"] = "failed"
+        job_data_ref[job_id]["error"] = error_msg
+        active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
         return
 
     # Randomly choose segments for HeyGen
@@ -170,15 +159,15 @@ async def run_heygen_workflow(job_id: str, script_path: str):
         voiceover_text = segment_data.get("voiceover")
         b_roll_keywords = segment_data.get("b_roll_keywords", [])
 
-        # Initialize segment state
+        # Initialize segment state in the passed job_data_ref
         segment_type = "heygen" if segment_name in heygen_target_segments else "pexels"
-        job_data[job_id]["assets"]["segments"][segment_name] = {
+        job_data_ref[job_id]["assets"]["segments"][segment_name] = {
             "type": segment_type,
             "audio_path": None,
             "audio_status": "pending",
             "visual_status": "pending",
         }
-        segment_state = job_data[job_id]["assets"]["segments"][segment_name]
+        segment_state = job_data_ref[job_id]["assets"]["segments"][segment_name]
 
         if not voiceover_text:
             logger.warning(f"[{job_id}] Segment '{segment_name}' has no voiceover text. Skipping audio.")
@@ -187,7 +176,7 @@ async def run_heygen_workflow(job_id: str, script_path: str):
 
         # --- 3a. Generate Audio (ElevenLabs) ---
         logger.info(f"[{job_id}] Initiating audio generation for segment: {segment_name}")
-        active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Generating audio for {segment_name}...")
+        active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Generating audio for {segment_name}...")
         audio_filename = f"segment_{segment_name}.mp3"
         audio_full_path = os.path.join(audio_output_dir, audio_filename)
         # Note: text_to_speech is synchronous. We could run it in an executor for parallelization.
@@ -198,7 +187,7 @@ async def run_heygen_workflow(job_id: str, script_path: str):
                 segment_state["audio_path"] = generated_audio_path # Store the returned path
                 segment_state["audio_status"] = "completed"
                 logger.info(f"[{job_id}] Audio completed for {segment_name}: {generated_audio_path}")
-                active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Audio completed for {segment_name}.")
+                active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Audio completed for {segment_name}.")
             else:
                 raise ValueError("text_to_speech failed or returned invalid path")
         except Exception as e:
@@ -206,7 +195,7 @@ async def run_heygen_workflow(job_id: str, script_path: str):
             logger.error(f"[{job_id}] {error_msg}")
             segment_state["audio_status"] = "failed"
             segment_state["error"] = error_msg
-            active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+            active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
             # Optionally: Mark overall job as failed or try to continue without this segment's audio?
 
         # --- 3b. Initiate Visuals (HeyGen or Pexels) ---
@@ -234,7 +223,7 @@ async def run_heygen_workflow(job_id: str, script_path: str):
                 logger.warning(f"[{job_id}] S3 not configured. HeyGen will use its own TTS for segment {segment_name}.")
 
             logger.info(f"[{job_id}] Initiating HeyGen video for segment: {segment_name} (Avatar: {avatar_id})")
-            active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Starting HeyGen video for {segment_name}...")
+            active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Starting HeyGen video for {segment_name}...")
             # Note: We need audio_url for HeyGen. For now, using text input.
             # To use ElevenLabs audio: upload generated_audio_path to a public URL (e.g., S3)
             # and pass that URL as voice_audio_url instead of voice_text.
@@ -264,7 +253,7 @@ async def run_heygen_workflow(job_id: str, script_path: str):
                 logger.error(f"[{job_id}] {error_msg}")
                 segment_state["visual_status"] = "failed"
                 segment_state["error"] = error_msg
-                active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+                active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
         else:
             # --- Pexels ---
             segment_state["type"] = "pexels"
@@ -276,7 +265,7 @@ async def run_heygen_workflow(job_id: str, script_path: str):
             query = " ".join(b_roll_keywords)
             segment_state["pexels_query"] = query
             logger.info(f"[{job_id}] Initiating Pexels search for segment: {segment_name} (Query: {query})")
-            active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Finding Pexels video for {segment_name}...")
+            active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Finding Pexels video for {segment_name}...")
             # Note: find_and_download_videos is synchronous.
             try:
                 # Determine how many clips are needed based on audio duration (approx 5s/clip?)
@@ -294,7 +283,7 @@ async def run_heygen_workflow(job_id: str, script_path: str):
                     segment_state["pexels_video_paths"] = downloaded_paths
                     segment_state["visual_status"] = "completed"
                     logger.info(f"[{job_id}] Pexels videos downloaded for {segment_name}: {downloaded_paths}")
-                    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Pexels video downloaded for {segment_name}.")
+                    active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Pexels video downloaded for {segment_name}.")
                 else:
                      raise ValueError("find_and_download_videos returned no paths.")
             except Exception as e:
@@ -302,39 +291,41 @@ async def run_heygen_workflow(job_id: str, script_path: str):
                 logger.error(f"[{job_id}] {error_msg}")
                 segment_state["visual_status"] = "failed"
                 segment_state["error"] = error_msg
-                active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+                active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
 
     # --- 4. Initiate Music Download ---
     music_query = parsed_script.get("production_notes", {}).get("music_vibe")
     if music_query:
         logger.info(f"[{job_id}] Initiating music search (Query: {music_query})")
-        active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Searching for background music...")
+        active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Searching for background music...")
         music_filename = "background_music.mp3"
+        # Construct the full output path before calling
         music_full_path = os.path.join(music_output_dir, music_filename)
-        job_data[job_id]["assets"]["music_status"] = "processing"
+        job_data_ref[job_id]["assets"]["music_status"] = "processing"
         # Note: find_and_download_music is synchronous
         try:
+            # Call with the full output_path
             downloaded_music_path = find_and_download_music(FREESOUND_API_KEY, music_query, music_full_path)
             if downloaded_music_path:
-                job_data[job_id]["assets"]["music_path"] = downloaded_music_path
-                job_data[job_id]["assets"]["music_status"] = "completed"
+                job_data_ref[job_id]["assets"]["music_path"] = downloaded_music_path
+                job_data_ref[job_id]["assets"]["music_status"] = "completed"
                 logger.info(f"[{job_id}] Background music downloaded: {downloaded_music_path}")
-                active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Background music downloaded.")
+                active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Background music downloaded.")
             else:
                  raise ValueError("find_and_download_music returned no path.")
         except Exception as e:
             error_msg = f"Background music download failed: {e}"
             logger.error(f"[{job_id}] {error_msg}")
-            job_data[job_id]["assets"]["music_status"] = "failed"
+            job_data_ref[job_id]["assets"]["music_status"] = "failed"
             # Fix TypeError: handle None case for error string concatenation
-            current_error = job_data[job_id].get("error")
+            current_error = job_data_ref[job_id].get("error")
             new_error_part = "Music Download Failed"
-            job_data[job_id]["error"] = f"{current_error} | {new_error_part}" if current_error else new_error_part
-            active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
+            job_data_ref[job_id]["error"] = f"{current_error} | {new_error_part}" if current_error else new_error_part
+            active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Error: {error_msg}")
     else:
         logger.warning(f"[{job_id}] No music_vibe found in production_notes. Skipping background music.")
-        job_data[job_id]["assets"]["music_status"] = "skipped"
-        active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Skipped background music (no query).")
+        job_data_ref[job_id]["assets"]["music_status"] = "skipped"
+        active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Skipped background music (no query).")
 
     # --- 5. Waiting Phase ---
     # The actual waiting for HeyGen webhooks and assembly will happen
@@ -342,7 +333,7 @@ async def run_heygen_workflow(job_id: str, script_path: str):
     # or triggered separately based on webhook updates.
     # For now, this function initiates everything and exits.
     logger.info(f"[{job_id}] Asset generation initiated. Waiting for HeyGen webhooks (if any) and manual trigger for assembly.")
-    active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Asset generation initiated. Waiting for completion...")
+    active_jobs_ref[job_id].append(f"[{datetime.now().isoformat()}] Asset generation initiated. Waiting for completion...")
     # TODO: Implement waiting logic or separate assembly step
 
 # Example of how to run (will be triggered by FastAPI endpoint later)
@@ -359,8 +350,10 @@ async def run_heygen_workflow(job_id: str, script_path: str):
 # --- Assembly and Captioning Step --- #
 
 # Import necessary functions from other modules for assembly
-from editor import assemble_heygen_video
-from create_captions import add_bottom_captions
+# These imports are only needed if check_job_completion and run_assembly_and_captioning are defined *here*.
+# Since run_assembly_and_captioning was moved to main.py, these specific lines might not be needed here anymore.
+# from .editor import assemble_heygen_video
+# from .create_captions import add_bottom_captions
 
 def check_job_completion(job_id: str, job_data_global: Dict[str, Any]) -> bool:
     """Checks if all assets for a given job ID are ready."""
