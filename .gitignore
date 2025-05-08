@@ -51,3 +51,4 @@ var/
 backend/assets/audio/
 backend/assets/videos/
 backend/assets/output/*
+backend/assets/argil_workflow/*
