@@ -20,3 +20,4 @@ boto3 # For AWS S3 interaction
 playwright
 pytest
 pytest-asyncio
+python-slugify

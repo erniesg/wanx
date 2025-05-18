@@ -12,9 +12,14 @@ from backend.text_to_video.envato_client import (
     search_envato_music_by_url,
     logout_from_envato,
     download_envato_asset,
-    search_envato_stock_video_by_url
+    search_envato_stock_video_by_url,
+    search_envato_photos_by_url
 )
-from backend.text_to_video.models.envato_models import EnvatoMusicSearchParams, EnvatoMusicGenre, EnvatoMusicMood, EnvatoMusicTempo, EnvatoMusicTheme, EnvatoStockVideoSearchParams, EnvatoVideoCategory, EnvatoVideoOrientation, EnvatoVideoResolution
+from backend.text_to_video.models.envato_models import (
+    EnvatoMusicSearchParams, EnvatoMusicGenre, EnvatoMusicMood, EnvatoMusicTempo, EnvatoMusicTheme,
+    EnvatoStockVideoSearchParams, EnvatoVideoCategory, EnvatoVideoOrientation, EnvatoVideoResolution,
+    EnvatoPhotoSearchParams, EnvatoPhotoOrientation, EnvatoPhotoNumberOfPeople
+)
 
 @pytest.mark.asyncio
 async def test_envato_login_success():
@@ -243,6 +248,89 @@ async def test_envato_stock_video_download(tmp_path: Path):
                 allowed_extensions = [".mp4", ".mov", ".avi", ".mkv"]
                 assert download_path_obj.suffix.lower() in allowed_extensions, f"Downloaded file {download_path_obj} is not a recognized video file type."
                 print(f"Single video file downloaded: {download_path_obj}")
+            else:
+                pytest.fail(f"Downloaded path {download_path_obj} is neither a recognized file nor a directory.")
+
+        finally:
+            if page: await logout_from_envato(page)
+            if browser: await browser.close()
+
+@pytest.mark.asyncio
+async def test_envato_photo_download(tmp_path: Path):
+    """Test searching for photos, downloading one item, and verifying image files."""
+    username, password = get_envato_credentials()
+    if not username or not password:
+        pytest.skip("ENVATO_USERNAME or ENVATO_PASSWORD not set. Skipping photo download test.")
+
+    project_license_value_fixture = os.getenv("ENVATO_TEST_PROJECT_LICENSE_VALUE", "ai-video")
+    if project_license_value_fixture == "ai-video" and not os.getenv("ENVATO_TEST_PROJECT_LICENSE_VALUE"):
+        print(f"WARN: Using default 'ai-video' for project license. Set ENVATO_TEST_PROJECT_LICENSE_VALUE if different.")
+
+    browser = None
+    page: Optional[Page] = None
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+
+            await login_to_envato(page, username, password)
+
+            search_params = EnvatoPhotoSearchParams(
+                keyword="modern city skyline",
+                orientations=[EnvatoPhotoOrientation.LANDSCAPE],
+                # number_of_people=[EnvatoPhotoNumberOfPeople.NO_PEOPLE] # Optional filter
+            )
+            num_results_to_save = 5
+            print(f"Searching for photos with params: {search_params.model_dump_json(indent=2)}")
+
+            download_directory_fixture = tmp_path / "envato_photo_assets"
+            download_directory_fixture.mkdir(parents=True, exist_ok=True)
+
+            photo_items = await search_envato_photos_by_url(
+                page,
+                params=search_params,
+                num_results_to_save=num_results_to_save
+            )
+            print(f"Found {len(photo_items)} photo items.")
+            assert photo_items, "No photo items found for the given search criteria."
+
+            downloadable_items = [item for item in photo_items if item.get("download_button_locator")]
+            assert downloadable_items, "No downloadable photo items found in the search results."
+
+            selected_item = random.choice(downloadable_items)
+            item_title = selected_item["title"]
+            download_button_locator = selected_item["download_button_locator"]
+            item_page_url = selected_item["item_page_url"]
+
+            print(f"Attempting to download photo: {item_title}")
+
+            download_path = await download_envato_asset(
+                page,
+                item_title=item_title,
+                download_button_locator=download_button_locator,
+                project_license_value=project_license_value_fixture,
+                download_directory=str(download_directory_fixture),
+                item_page_url=item_page_url
+            )
+
+            assert download_path, "Download path was not returned for photo."
+            download_path_obj = Path(download_path)
+            print(f"Photo asset supposedly downloaded/extracted to: {download_path_obj}")
+
+            assert download_path_obj.exists(), f"Photo download/extraction path {download_path_obj} does not exist."
+
+            image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp") # Common image extensions
+
+            if download_path_obj.is_dir(): # If it was a zip and got extracted
+                image_files_found = []
+                for ext_pattern in [f"*{ext}" for ext in image_extensions]:
+                    image_files_found.extend(list(download_path_obj.rglob(ext_pattern)))
+                print(f"Image files found in {download_path_obj}: {image_files_found}")
+                assert image_files_found, f"No common image files ({', '.join(image_extensions)}) found in directory {download_path_obj}."
+            elif download_path_obj.is_file(): # Single image file downloaded directly
+                assert download_path_obj.suffix.lower() in image_extensions, f"Downloaded file {download_path_obj} is not a recognized image file type."
+                print(f"Single image file downloaded: {download_path_obj}")
             else:
                 pytest.fail(f"Downloaded path {download_path_obj} is neither a recognized file nor a directory.")
 

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from playwright.async_api import Page, Download, Locator # Added Locator
 from typing import List, Dict, Tuple, Optional, Any # Added Any for locator in dict
 
-from backend.text_to_video.models.envato_models import EnvatoMusicSearchParams, EnvatoStockVideoSearchParams # Added import
+from backend.text_to_video.models.envato_models import EnvatoMusicSearchParams, EnvatoStockVideoSearchParams, EnvatoPhotoSearchParams # Added EnvatoPhotoSearchParams
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -189,15 +189,48 @@ async def search_envato_stock_video_by_url(page: Page, params: EnvatoStockVideoS
     logger.info(f"Navigating to Envato stock video search URL: {full_search_url}")
     try:
         await page.goto(full_search_url, wait_until="networkidle", timeout=30000)
-        # Video URLs look like /stock-video/category/keyword...
+
+        # Explicitly wait for a main container of search results to be visible
+        # This selector is a guess; may need adjustment based on actual page structure.
+        search_results_container_selector = "div[data-testid*='results']" # e.g., data-testid="search-results-view-content" or similar
+        try:
+            logger.info(f"Waiting for video search results container: {search_results_container_selector}")
+            await page.wait_for_selector(search_results_container_selector, timeout=15000, state="visible")
+            logger.info("Video search results container found.")
+        except Exception as e_container:
+            logger.warning(f"Video search results container ('{search_results_container_selector}') not found. Parsing might fail or be incomplete. {e_container}")
+            # Consider a screenshot here if parsing then fails: await page.screenshot(path="debug_video_no_container.png")
+
         if "/stock-video/" not in page.url and "content-not-found" not in page.url:
-            logger.warning(f"Page URL '{page.url}' may not be stock video results. Proceeding.")
+            # The warning message in the test output ("Page URL ... may not be stock video results") came from this line.
+            # This check seems okay, but the core issue was item parsing.
+            logger.warning(f"Page URL '{page.url}' does not strictly match '/stock-video/'. Proceeding to parse if no 'content-not-found'.")
         if "content-not-found" in page.url:
             logger.error(f"Envato: Content Not Found for video URL: {full_search_url}")
             return []
         return await _parse_envato_item_search_results_page(page, params.keyword, "video", num_results_to_save)
     except Exception as e_url_search:
         logger.error(f"Error during Envato stock video search by URL for '{params.keyword}': {e_url_search}")
+        return []
+
+async def search_envato_photos_by_url(page: Page, params: EnvatoPhotoSearchParams, num_results_to_save: int = 10) -> List[Dict[str, Any]]:
+    """
+    Searches for photos on Envato Elements using a direct URL from parameters.
+    """
+    search_path = params.build_url_path()
+    full_search_url = f"https://elements.envato.com{search_path}"
+    logger.info(f"Navigating to Envato photo search URL: {full_search_url}")
+    try:
+        await page.goto(full_search_url, wait_until="networkidle", timeout=30000)
+        # Photo URLs look like /photos/keyword/filters...
+        if "/photos/" not in page.url and "content-not-found" not in page.url:
+            logger.warning(f"Page URL '{page.url}' may not be photo results. Proceeding cautiously.")
+        if "content-not-found" in page.url:
+            logger.error(f"Envato: Content Not Found for photo URL: {full_search_url}")
+            return []
+        return await _parse_envato_item_search_results_page(page, params.keyword, "photo", num_results_to_save)
+    except Exception as e_url_search:
+        logger.error(f"Error during Envato photo search by URL for '{params.keyword}': {e_url_search}")
         return []
 
 async def logout_from_envato(page: Page) -> None:
@@ -297,47 +330,69 @@ async def download_envato_asset(
         # 1. Click the item's download button (on search results page) to open the license modal
         logger.info(f"Clicking item's download button to open modal (Title: {item_title})...")
         await download_button_locator.click()
-        # await page.wait_for_timeout(1000) # Small delay to allow modal to start opening
+        # await page.wait_for_timeout(1000) # User removed this, respecting that for now
 
         # 2. Handle the license pop-up modal
         project_radio_selector = f'input[type="radio"][value="{project_license_value}"]'
-        logger.info(f"Waiting for project license radio button: {project_radio_selector}")
 
-        # Ensure backend/logs directory exists
         logs_dir = Path("backend/logs")
         logs_dir.mkdir(parents=True, exist_ok=True)
         screenshot_path = logs_dir / f"error_modal_radio_timeout_{sanitize_filename(item_title)}.png"
 
-        try:
-            await page.wait_for_selector(project_radio_selector, timeout=25000, state="visible") # Original timeout
-        except Exception as e_radio_timeout:
-            logger.error(f"Timeout waiting for project radio button '{project_radio_selector}'. Modal might not have appeared or project value is incorrect. {e_radio_timeout}")
-            logger.info(f"Attempting to save screenshot to: {screenshot_path}")
-            await page.screenshot(path=str(screenshot_path))
+        modal_visible = False
+        modal_container_locator = None
+        # Try to find and wait for the modal container first
+        modal_selectors_to_try = ["div[role='dialog']", "div[aria-modal='true']", "section[aria-modal='true']"]
+        logger.info("Waiting for license modal container to appear...")
+        for modal_selector_str in modal_selectors_to_try:
+            try:
+                current_modal_container = page.locator(modal_selector_str).first
+                # Wait for this specific container to be visible, short timeout per selector
+                await current_modal_container.wait_for(state="visible", timeout=7000)
+                logger.info(f"Modal container '{modal_selector_str}' found and visible.")
+                modal_container_locator = current_modal_container
+                modal_visible = True
+                break
+            except Exception:
+                logger.info(f"Modal container '{modal_selector_str}' not found or not visible within 7s.")
+                continue
 
-            # Attempt to log modal content if radio button is not found
-            modal_selectors_to_try = ["div[role='dialog']", "div[aria-modal='true']", "section[aria-modal='true']"]
-            modal_found = False
-            for i, modal_selector in enumerate(modal_selectors_to_try):
-                modal_container = page.locator(modal_selector).first
-                if await modal_container.count() > 0 and await modal_container.is_visible():
-                    try:
-                        modal_html = await modal_container.evaluate("(element) => element.outerHTML", timeout=5000)
-                        logger.info(f"Modal content (using selector '{modal_selector}'):\n{modal_html}")
-                        modal_found = True
-                        break # Found a modal, no need to check others
-                    except Exception as e_html:
-                        logger.warning(f"Found modal with '{modal_selector}' but could not get its HTML: {e_html}")
-                else:
-                    logger.info(f"Modal container with selector '{modal_selector}' not found or not visible.")
-            if not modal_found:
-                logger.warning("Could not find or log content of any common modal container after radio button timeout.")
+        if not modal_visible:
+            logger.error("License modal container did not appear after clicking download.")
+            await page.screenshot(path=str(screenshot_path))
             return None
 
-        logger.info(f"Selecting project radio button with value: '{project_license_value}'")
-        await page.locator(project_radio_selector).check()
-        # Ensure it's checked if .check() doesn't throw error on already checked
-        assert await page.locator(project_radio_selector).is_checked(), f"Failed to check project radio button '{project_license_value}'"
+        # Now that modal container is visible, try to find the radio button within it or on the page
+        logger.info(f"Modal container found. Waiting for project license radio button: {project_radio_selector}")
+        try:
+            # Try finding radio button within the modal first, then fall back to page-wide search if necessary
+            radio_button_locator_in_modal = modal_container_locator.locator(project_radio_selector)
+            if await radio_button_locator_in_modal.count() > 0:
+                 await radio_button_locator_in_modal.wait_for(state="visible", timeout=15000) # Wait for it to be visible in modal
+                 radio_button_to_check = radio_button_locator_in_modal
+            else:
+                 logger.info("Radio button not immediately found in modal container, trying page-wide search.")
+                 await page.wait_for_selector(project_radio_selector, timeout=15000, state="visible")
+                 radio_button_to_check = page.locator(project_radio_selector)
+
+            # Check if the selected locator is indeed visible before interacting
+            if not await radio_button_to_check.is_visible():
+                raise Exception(f"Radio button '{project_radio_selector}' found in DOM but not visible.")
+
+            logger.info(f"Selecting project radio button with value: '{project_license_value}'")
+            await radio_button_to_check.check()
+            assert await radio_button_to_check.is_checked(), f"Failed to check project radio button '{project_license_value}'"
+
+        except Exception as e_radio_timeout:
+            logger.error(f"Error with project radio button '{project_radio_selector}' within modal: {e_radio_timeout}")
+            logger.info(f"Attempting to save screenshot to: {screenshot_path}")
+            await page.screenshot(path=str(screenshot_path))
+            try:
+                modal_html = await modal_container_locator.evaluate("(element) => element.outerHTML", timeout=5000)
+                logger.info(f"Modal content (after radio button failure):\n{modal_html}")
+            except Exception as e_html:
+                logger.warning(f"Could not get modal HTML after radio button failure: {e_html}")
+            return None
 
         # 3. Click the "License & download" button in the modal
         license_and_download_button_selector = 'button[data-testid="add-download-button"]'

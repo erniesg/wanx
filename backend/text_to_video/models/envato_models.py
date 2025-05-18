@@ -2,6 +2,7 @@ from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 import re
+from slugify import slugify
 
 class EnvatoMusicTheme(Enum):
     TECHNOLOGY = "technology"
@@ -176,48 +177,40 @@ class EnvatoVideoResolution(Enum):
     UHD_8K = "8k-(uhd)" # Guessing, confirm if needed
 
 class EnvatoStockVideoSearchParams(BaseModel):
-    keyword: str = Field(..., description="The main search keyword(s).")
-    category: EnvatoVideoCategory = Field(..., description="The category of video to search for.")
+    keyword: str
+    category: EnvatoVideoCategory = EnvatoVideoCategory.STOCK_FOOTAGE # Default for convenience
     orientation: Optional[EnvatoVideoOrientation] = None
-    resolutions: Optional[List[EnvatoVideoResolution]] = None
-    min_length: Optional[str] = Field(None, description="Minimum length in MM:SS format, e.g., '00:15'.")
-    max_length: Optional[str] = Field(None, description="Maximum length in MM:SS format, e.g., '01:00'.")
+    resolutions: Optional[List[EnvatoVideoResolution]] = None # Can have multiple
+    min_length: Optional[str] = None # e.g., "00:10"
+    max_length: Optional[str] = None # e.g., "01:00"
 
     @field_validator('min_length', 'max_length')
-    @classmethod
-    def validate_video_length_format(cls, v):
-        if v is None or v.lower() == 'any': # Allow 'any' or None
-            return v
-        if not re.match(r"^\d{2}:\d{2}$", v):
-            raise ValueError("Length must be in MM:SS format or 'any'.")
-        minutes, seconds = map(int, v.split(':'))
-        if not (0 <= minutes <= 99 and 0 <= seconds <= 59):
-            raise ValueError("Invalid MM:SS time format for video length.")
-        return v
+    def validate_time_format(cls, value):
+        if value and not re.match(r"^\d{2}:\d{2}(:\d{2})?$", value): # Allows HH:MM or HH:MM:SS
+            raise ValueError('Time format must be MM:SS or HH:MM:SS')
+        return value
 
     def build_url_path(self) -> str:
-        # Base path: elements.envato.com/stock-video/{category}/{keyword}/...
-        base_path = f"/stock-video/{self.category.value}/"
-        keyword_path = self.keyword.replace(" ", "+")
-        path_segments = [keyword_path]
+        # Corrected: Base path should always start with "stock-video"
+        path_parts = ["stock-video", self.category.value]
+        if self.keyword:
+            path_parts.append(slugify(self.keyword))
 
+        filters = []
         if self.orientation:
-            path_segments.append(f"orientation-{self.orientation.value}")
-
+            filters.append(f"orientation-{self.orientation.value}")
         if self.resolutions:
-            # Resolutions are joined by '+' for OR logic, e.g., resolution-4k-(uhd)+1080p-(full-hd)
-            value_str = "+".join([res.value for res in self.resolutions])
-            path_segments.append(f"resolution-{value_str}")
+            res_values = "+".join([res.value for res in self.resolutions])
+            filters.append(f"resolution-{res_values}")
+        if self.min_length:
+            filters.append(f"min-length-{self.min_length}")
+        if self.max_length:
+            filters.append(f"max-length-{self.max_length}")
 
-        # Length parameters
-        if self.min_length and self.min_length.lower() != 'any' and self.max_length and self.max_length.lower() != 'any':
-            path_segments.append(f"min-length-{self.min_length}/max-length-{self.max_length}") # Note: Envato seems to use separate path segments for these
-        elif self.min_length and self.min_length.lower() != 'any':
-            path_segments.append(f"min-length-{self.min_length}")
-        elif self.max_length and self.max_length.lower() != 'any':
-            path_segments.append(f"max-length-{self.max_length}")
+        if filters:
+            path_parts.extend(filters)
 
-        return base_path + "/".join(path_segments)
+        return "/" + "/".join(path_parts)
 
 # Example Usage for Video Models:
 if __name__ == "__main__":
@@ -245,3 +238,97 @@ if __name__ == "__main__":
     )
     print(f"Video Params 3 URL: {vid_params3.build_url_path()}")
     # Expected: /stock-video/stock-footage/nature+drone+shot/resolution-4k-(uhd)
+
+# --- Photo Models ---
+
+class EnvatoPhotoOrientation(Enum):
+    LANDSCAPE = "landscape"
+    PORTRAIT = "portrait"
+    SQUARE = "square"
+    # Add PANORAMIC if it exists and is needed
+
+class EnvatoPhotoNumberOfPeople(Enum):
+    NO_PEOPLE = "no-people"
+    ONE_PERSON = "1-person"
+    TWO_PEOPLE = "2-people"
+    THREE_PEOPLE = "3-people"
+    FOUR_OR_MORE_PEOPLE = "4-or-more-people" # Assuming this might exist
+
+class EnvatoPhotoSearchParams(BaseModel):
+    keyword: str
+    # category: EnvatoPhotoCategory = EnvatoPhotoCategory.PHOTOS # If there's a specific photo category enum
+    orientations: Optional[List[EnvatoPhotoOrientation]] = None
+    number_of_people: Optional[List[EnvatoPhotoNumberOfPeople]] = None
+    # Add other relevant photo filters like color, style, etc. if needed
+
+    def build_url_path(self) -> str:
+        # Base path for photos is just /photos/
+        path_parts = ["photos"]
+        if self.keyword:
+            path_parts.append(slugify(self.keyword))
+
+        filters = []
+        if self.orientations:
+            orientation_values = "+".join([o.value for o in self.orientations])
+            filters.append(f"orientation-{orientation_values}")
+
+        if self.number_of_people:
+            people_values = "+".join([p.value for p in self.number_of_people])
+            filters.append(f"number-of-people-{people_values}")
+
+        if filters:
+            path_parts.extend(filters)
+
+        return "/" + "/".join(path_parts)
+
+# Example Usage:
+if __name__ == '__main__':
+    # Music Example
+    music_params = EnvatoMusicSearchParams(
+        keyword="epic cinematic trailer",
+        themes=[EnvatoMusicTheme.ACTION, EnvatoMusicTheme.ADVENTURE],
+        genres=[EnvatoMusicGenre.ORCHESTRAL, EnvatoMusicGenre.ELECTRONIC],
+        moods=[EnvatoMusicMood.POWERFUL, EnvatoMusicMood.TENSE],
+        tempos=[EnvatoMusicTempo.FAST],
+        min_length="01:00",
+        max_length="03:30",
+        min_bpm=120,
+        max_bpm=180,
+        # vocality=EnvatoMusicVocality.INSTRUMENTAL_ONLY,
+        # categories=[EnvatoMusicCategory.MUSIC]
+    )
+    print(f"Music Params URL: {music_params.build_url_path()}")
+
+    music_params_simple = EnvatoMusicSearchParams(keyword="uplifting acoustic")
+    print(f"Music Params Simple URL: {music_params_simple.build_url_path()}")
+
+    # Video Example
+    vid_params = EnvatoStockVideoSearchParams(
+        keyword="city traffic timelapse",
+        category=EnvatoVideoCategory.STOCK_FOOTAGE,
+        orientation=EnvatoVideoOrientation.HORIZONTAL,
+        resolutions=[EnvatoVideoResolution.HD_1080P, EnvatoVideoResolution.HD_720P],
+        min_length="00:05",
+        max_length="00:20"
+    )
+    print(f"Video Params URL: {vid_params.build_url_path()}")
+
+    vid_params2 = EnvatoStockVideoSearchParams(keyword="abstract background")
+    print(f"Video Params 2 URL: {vid_params2.build_url_path()}")
+
+    vid_params3 = EnvatoStockVideoSearchParams(
+        keyword="nature drone shot",
+        resolutions=[EnvatoVideoResolution.K_4]
+    )
+    print(f"Video Params 3 URL: {vid_params3.build_url_path()}")
+
+    # Photo Example
+    photo_params = EnvatoPhotoSearchParams(
+        keyword="shanghai city",
+        orientations=[EnvatoPhotoOrientation.LANDSCAPE, EnvatoPhotoOrientation.PORTRAIT],
+        number_of_people=[EnvatoPhotoNumberOfPeople.NO_PEOPLE, EnvatoPhotoNumberOfPeople.ONE_PERSON]
+    )
+    print(f"Photo Params URL: {photo_params.build_url_path()}")
+
+    photo_params_simple = EnvatoPhotoSearchParams(keyword="modern office space")
+    print(f"Photo Params Simple URL: {photo_params_simple.build_url_path()}")
