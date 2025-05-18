@@ -59,7 +59,15 @@ async def login_to_envato(page: Page, username: str, password: str) -> bool:
         # Wait for navigation to the homepage or a dashboard URL
         # Example: Wait for the URL to change to the main elements page
         await page.wait_for_url("https://elements.envato.com/**", timeout=30000) # Increased timeout
-        logger.info(f"Login successful, current URL: {page.url}")
+        logger.info(f"Initial login navigation successful, current URL: {page.url}")
+
+        # Add explicit visit to homepage and a small delay to help session stabilization
+        logger.info("Explicitly navigating to Envato Elements homepage to help stabilize session...")
+        await page.goto("https://elements.envato.com/", wait_until="networkidle")
+        logger.info(f"Navigated to homepage, current URL: {page.url}. Waiting for 3 seconds...")
+        await page.wait_for_timeout(3000) # Small delay
+
+        logger.info("Login and session stabilization steps completed.")
         return True
     except Exception as e:
         logger.error(f"Error during Envato login: {e}")
@@ -67,19 +75,19 @@ async def login_to_envato(page: Page, username: str, password: str) -> bool:
         # await page.screenshot(path="envato_login_error.png")
         return False
 
-async def _parse_envato_item_search_results_page(page: Page, keyword_identifier: str, item_type: str, num_results_to_save: int) -> List[Dict[str, Any]]:
+async def _parse_envato_item_search_results_page(page: Page, keyword_identifier: str, item_type: str, max_items_to_return: int) -> List[Dict[str, Any]]:
     """
     Private helper to parse item cards from an Envato Elements search results page (audio or video).
     Finds all title links, then for each, finds its encapsulating card and the download button within that card.
     Args:
         page: Playwright Page object, assumed to be on a search results page.
         keyword_identifier: The original keyword or a descriptor for logging.
-        item_type: 'audio' or 'video' for logging.
-        num_results_to_save: Max number of items to extract.
+        item_type: 'audio', 'video', or 'photo' for logging.
+        max_items_to_return: Max number of successfully parsed items to return.
     Returns:
         A list of dictionaries, each containing 'title', 'item_page_url', and 'download_button_locator'.
     """
-    search_results: List[Dict[str, Any]] = []
+    all_successfully_parsed_items: List[Dict[str, Any]] = []
     title_link_selector = "a[data-testid='title-link']"
     download_button_selector_in_card = "button[data-testid='button-download']"
 
@@ -87,80 +95,92 @@ async def _parse_envato_item_search_results_page(page: Page, keyword_identifier:
     # Looks for article, li, or specific types of divs.
     card_ancestor_xpath = "ancestor::*[self::article or self::li or (self::div and (contains(@data-testid, 'card') or @role='listitem' or contains(@class,'item') or contains(@class,'card') ))][1]"
 
-    logger.info(f"Parsing {item_type} results for '{keyword_identifier}'. Looking for title links: '{title_link_selector}'")
+    logger.info(f"Starting to parse {item_type} results for '{keyword_identifier}'. Looking for title links: '{title_link_selector}'")
 
     try:
+        # Attempt to wait for at least one such link to ensure the page has likely loaded search results.
         await page.wait_for_selector(title_link_selector, timeout=20000, state="attached")
         link_locators = await page.locator(title_link_selector).all()
-        logger.info(f"Found {len(link_locators)} potential {item_type} title links. Parsing up to {num_results_to_save}.")
+        logger.info(f"Found {len(link_locators)} potential {item_type} title links on the page. Attempting to process all of them.")
 
         if not link_locators:
-            logger.warning(f"No title links ('{title_link_selector}') found for '{keyword_identifier}'. Page might not have loaded correctly or selector needs update.")
+            logger.warning(f"No title links ('{title_link_selector}') found for '{keyword_identifier}' after initial check. Page might not have loaded correctly or selector needs update.")
             # await page.screenshot(path=f"debug_no_title_links_{sanitize_filename(keyword_identifier)}.png")
             return []
 
         for i, link_locator in enumerate(link_locators):
-            if len(search_results) >= num_results_to_save:
-                break
+            # This explicit check for max_items_to_return is removed here.
+            # We process all, then slice later.
 
-            item_page_url = "N/A"
+            item_page_url = "N/A" # Initialize for error logging
+            title_text = f"Envato {item_type.capitalize()} Item (Processing {i+1})" # Initialize for error logging
             try:
-                # Ensure link is visible/actionable before proceeding too far.
-                # Though is_visible can be tricky with lazy loading, let's get basic attributes first.
-                if await link_locator.count() == 0: # Should not happen if .all() returned it, but defensive.
-                    logger.warning(f"Link {i+1} ({item_type}): Locator became invalid. Skipping.")
+                if await link_locator.count() == 0:
+                    logger.warning(f"Link {i+1} ({item_type}): Locator became invalid or detached. Skipping.")
                     continue
 
                 item_page_url_relative = await link_locator.get_attribute("href")
                 if not item_page_url_relative:
-                    logger.warning(f"Link {i+1} ({item_type}): Could not find href for title link. Skipping.")
+                    logger.warning(f"Link {i+1} ({item_type}): Could not find href attribute. Skipping.")
                     continue
                 item_page_url = urljoin(page.url, item_page_url_relative)
 
+                # Try multiple ways to get the title, prioritizing 'title' attribute, then specific span, then general text_content
                 title_text_from_attr = await link_locator.get_attribute("title")
                 title_text_from_span = ""
+                # Check for common patterns where title is inside a span or div > span within the link
                 if await link_locator.locator("span").count() > 0:
                      title_text_from_span = await link_locator.locator("span").first.text_content()
-                elif await link_locator.locator("div > span").count() > 0:
+                elif await link_locator.locator("div > span").count() > 0: # E.g. photos <div class="iBWt5ZZN">shanghai city</div>
                      title_text_from_span = await link_locator.locator("div > span").first.text_content()
-                title_text_from_content = await link_locator.text_content()
-                title_text = (title_text_from_attr or title_text_from_span or title_text_from_content or f"Envato {item_type.capitalize()} Item (No Title {i+1})").strip()
+                title_text_from_content = await link_locator.text_content() # Fallback to any text inside the link
 
-                # Find the encapsulating card ancestor from this link
+                title_text = (title_text_from_attr or title_text_from_span or title_text_from_content or f"Envato {item_type.capitalize()} Item (No Title {i+1})").strip()
+                if not title_text: # Ensure title is not empty
+                    title_text = f"Envato {item_type.capitalize()} Item (Empty Title {i+1})"
+
+
                 card_ancestor = link_locator.locator(f"xpath={card_ancestor_xpath}")
 
                 if await card_ancestor.count() == 0:
-                    logger.warning(f"Item '{title_text}' ({item_type}): Could not find a suitable card ancestor using XPath. URL: {item_page_url}. Skipping item.")
+                    logger.warning(f"Item '{title_text}' ({item_type}, Link {i+1}): Could not find a suitable card ancestor using XPath. URL: {item_page_url}. Skipping item.")
                     # await link_locator.screenshot(path=f"debug_link_{i+1}_no_card_ancestor.png")
                     continue
 
-                # Now find the download button within this card ancestor
                 download_button_in_card = card_ancestor.locator(download_button_selector_in_card).first
 
                 if await download_button_in_card.count() > 0 and await download_button_in_card.is_visible():
-                    logger.info(f"Result {len(search_results)+1} ({item_type}): '{title_text}', URL: '{item_page_url}', DL button found and visible in its card.")
-                    search_results.append({
+                    logger.debug(f"Successfully processed item {i+1} ({item_type}): '{title_text}'. Download button found in its card.")
+                    all_successfully_parsed_items.append({
                         "title": title_text,
                         "item_page_url": item_page_url,
                         "download_button_locator": download_button_in_card
                     })
                 else:
-                    logger.warning(f"Item '{title_text}' ({item_type}): DL button NOT found or not visible in its card. URL: {item_page_url}")
+                    logger.warning(f"Item '{title_text}' ({item_type}, Link {i+1}): Download button NOT found or not visible in its card. URL: {item_page_url}")
                     # await card_ancestor.screenshot(path=f"debug_card_for_{sanitize_filename(title_text)}_no_dl_button.png")
 
             except Exception as e_item_processing:
-                logger.error(f"Error processing {item_type} link {i+1} (Title: '{title_text if 'title_text' in locals() else 'N/A'}', URL: {item_page_url}): {e_item_processing}")
+                logger.error(f"Error processing {item_type} link {i+1} (Title: '{title_text}', URL: {item_page_url}): {e_item_processing}")
                 # Consider screenshotting near the link if an error occurs
                 # await link_locator.locator("xpath=..").screenshot(path=f"error_item_proc_{sanitize_filename(keyword_identifier)}_{i+1}.png")
 
-        if not search_results:
-            logger.warning(f"No {item_type} items with visible download buttons were successfully parsed for '{keyword_identifier}'.")
+        logger.info(f"Finished iterating through all {len(link_locators)} potential items. Successfully processed {len(all_successfully_parsed_items)} {item_type} items with their details and download buttons for '{keyword_identifier}'.")
+
+        if not all_successfully_parsed_items:
+            logger.warning(f"No {item_type} items with visible download buttons were successfully parsed for '{keyword_identifier}' from the {len(link_locators)} potential links found.")
+            return []
+
+        # Apply the max_items_to_return limit
+        if len(all_successfully_parsed_items) > max_items_to_return:
+            logger.info(f"Returning the first {max_items_to_return} of {len(all_successfully_parsed_items)} successfully processed {item_type} items for '{keyword_identifier}'.")
+            return all_successfully_parsed_items[:max_items_to_return]
         else:
-            logger.info(f"Successfully extracted {len(search_results)} {item_type} items with download buttons for '{keyword_identifier}'.")
-        return search_results
+            logger.info(f"Returning all {len(all_successfully_parsed_items)} successfully processed {item_type} items for '{keyword_identifier}' (requested up to {max_items_to_return}).")
+            return all_successfully_parsed_items
 
     except Exception as e_page_parsing:
-        logger.error(f"General error parsing {item_type} results page for '{keyword_identifier}' (e.g., title links not found): {e_page_parsing}")
+        logger.error(f"General error parsing {item_type} results page for '{keyword_identifier}' (e.g., initial title links check failed or other page-level issue): {e_page_parsing}")
         # await page.screenshot(path=f"error_page_parsing_titles_{sanitize_filename(keyword_identifier)}.png")
         return []
 

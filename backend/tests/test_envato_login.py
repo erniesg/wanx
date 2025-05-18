@@ -55,7 +55,7 @@ async def test_envato_music_search_by_url():
     browser = None # Initialize browser variable
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=False)
             page = await browser.new_page()
 
             login_success = await login_to_envato(page, username, password)
@@ -129,7 +129,7 @@ async def test_envato_music_download(tmp_path: Path):
 
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=False)
             page = await browser.new_page()
 
             login_success = await login_to_envato(page, username, password)
@@ -137,7 +137,7 @@ async def test_envato_music_download(tmp_path: Path):
 
             search_keyword = "short upbeat ident logo"
             search_params = EnvatoMusicSearchParams(keyword=search_keyword, max_length="00:30", min_length="00:05")
-            music_items = await search_envato_music_by_url(page, search_params, num_results_to_save=3)
+            music_items = await search_envato_music_by_url(page, search_params, num_results_to_save=5)
             assert music_items, f"No music items found for '{search_keyword}'."
             downloadable_items = [item for item in music_items if item.get("download_button_locator")]
             assert downloadable_items, f"No items with download button for '{search_keyword}'."
@@ -188,7 +188,7 @@ async def test_envato_stock_video_download(tmp_path: Path):
 
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=False)
             page = await browser.new_page()
 
             await login_to_envato(page, username, password)
@@ -271,7 +271,7 @@ async def test_envato_photo_download(tmp_path: Path):
 
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=False)
             page = await browser.new_page()
 
             await login_to_envato(page, username, password)
