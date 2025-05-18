@@ -17,3 +17,6 @@ elevenlabs==1.52.0
 # Added for HeyGen Workflow
 requests # For API calls
 boto3 # For AWS S3 interaction
+playwright
+pytest
+pytest-asyncio
