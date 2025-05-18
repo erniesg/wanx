@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from playwright.async_api import Page, Download, Locator # Added Locator
 from typing import List, Dict, Tuple, Optional, Any # Added Any for locator in dict
 
-from backend.text_to_video.models.envato_models import EnvatoMusicSearchParams, EnvatoStockVideoSearchParams, EnvatoPhotoSearchParams # Added EnvatoPhotoSearchParams
+from backend.text_to_video.models.envato_models import EnvatoMusicSearchParams, EnvatoStockVideoSearchParams, EnvatoPhotoSearchParams, EnvatoVideoCategory, EnvatoVideoResolution, EnvatoPhotoNumberOfPeople # Added EnvatoPhotoSearchParams
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -65,9 +65,10 @@ async def login_to_envato(page: Page, username: str, password: str) -> bool:
         logger.info("Explicitly navigating to Envato Elements homepage to help stabilize session...")
         await page.goto("https://elements.envato.com/", wait_until="networkidle")
         logger.info(f"Navigated to homepage, current URL: {page.url}. Waiting for 3 seconds...")
-        await page.wait_for_timeout(3000) # Small delay
+        # await page.wait_for_timeout(3000) # Small delay
 
-        logger.info("Login and session stabilization steps completed.")
+        logger.info("Login and session stabilization steps completed. Adding a final short delay before returning.")
+        # await page.wait_for_timeout(2000) # Additional short delay
         return True
     except Exception as e:
         logger.error(f"Error during Envato login: {e}")
@@ -251,6 +252,191 @@ async def search_envato_photos_by_url(page: Page, params: EnvatoPhotoSearchParam
         return await _parse_envato_item_search_results_page(page, params.keyword, "photo", num_results_to_save)
     except Exception as e_url_search:
         logger.error(f"Error during Envato photo search by URL for '{params.keyword}': {e_url_search}")
+        return []
+
+async def search_envato_stock_video_by_ui(page: Page, params: EnvatoStockVideoSearchParams, num_results_to_save: int = 5) -> List[Dict[str, Any]]:
+    """
+    Searches for stock video on Envato Elements by interacting with the UI (dropdown, search box, filters).
+    """
+    logger.info(f"Starting UI-based stock video search for keyword: '{params.keyword}' with params: {params.model_dump_json(indent=2)}")
+    try:
+        # Ensure we are on a page where the main search bar is available, e.g., homepage
+        current_url = page.url
+        if "elements.envato.com" not in current_url:
+            logger.info("Not on Envato Elements domain, navigating to homepage first.")
+            await page.goto("https://elements.envato.com/", wait_until="networkidle")
+        elif not (current_url == "https://elements.envato.com/" or current_url == "https://elements.envato.com" or "/s/" in current_url):
+             logger.info(f"Current URL is {current_url}. Navigating to homepage for clean search start.")
+             await page.goto("https://elements.envato.com/", wait_until="networkidle")
+
+        logger.info(f"Ensuring search input is visible before interacting with category dropdown. Current URL: {page.url}")
+        search_input_selector = 'input[data-testid="search-form-input"]'
+        await page.wait_for_selector(search_input_selector, state="visible", timeout=20000)
+        logger.info("Search input is visible.")
+
+        # 1. Select "Stock Video" from the search category dropdown
+        search_category_dropdown_trigger_selector = 'button[data-testid="search-filter-button"]'
+        # More robust selector: find the search-box (dropdown menu) then the button by role and name.
+        # This assumes the dropdown container that appears gets data-testid="search-box"
+        stock_video_option_locator_factory = lambda page_obj: page_obj.locator('[data-testid="search-box"]').get_by_role('button', name='Stock Video')
+
+        logger.info(f"Step 1: Clicking search category dropdown: {search_category_dropdown_trigger_selector}")
+        await page.locator(search_category_dropdown_trigger_selector).click()
+
+        # Get the locator for the option using the current page object
+        stock_video_option_locator = stock_video_option_locator_factory(page)
+
+        logger.info(f"Waiting for stock video option (within [data-testid='search-box']) to be visible after clicking dropdown.")
+        await stock_video_option_locator.wait_for(state="visible", timeout=10000)
+
+        logger.info(f"Step 2: Selecting 'Stock Video' option.")
+        await stock_video_option_locator.click()
+        await page.wait_for_timeout(1000) # Pause for selection to register and UI to update (e.g. main button label)
+
+        # 2. Enter the keyword into the search input and submit
+        logger.info(f"Step 3: Entering keyword '{params.keyword}' into search input: {search_input_selector}")
+        await page.fill(search_input_selector, params.keyword)
+        logger.info("Step 4: Pressing Enter to submit search.")
+        await page.press(search_input_selector, "Enter")
+        await page.wait_for_load_state("networkidle", timeout=30000)
+        logger.info(f"Search submitted. Current URL: {page.url}. Now applying filters.")
+
+        # 3. Apply filters (on the results page)
+        if params.category:
+            filter_aria_label = params.category.value.replace('-', ' ').title()
+            if params.category == EnvatoVideoCategory.VIDEO_TEMPLATES:
+                filter_aria_label = "Video Templates"
+
+            logger.info(f"Attempting to apply video category filter: '{filter_aria_label}'")
+            try:
+                category_filter_locator = page.locator(f'a[role="checkbox"][aria-label="{filter_aria_label}"]')
+                await category_filter_locator.click()
+                await page.wait_for_load_state("networkidle", timeout=20000)
+                logger.info(f"Video category filter '{filter_aria_label}' applied. Current URL: {page.url}")
+            except Exception as e_cat_filter:
+                logger.warning(f"Could not apply video category filter '{filter_aria_label}': {e_cat_filter}")
+
+        if params.orientation:
+            orientation_filter_label = params.orientation.value.title()
+            logger.info(f"Attempting to apply video orientation filter: '{orientation_filter_label}'")
+            try:
+                orientation_filter_locator = page.locator(f'a[role="checkbox"][aria-label="{orientation_filter_label}"]')
+                await orientation_filter_locator.click()
+                await page.wait_for_load_state("networkidle", timeout=20000)
+                logger.info(f"Video orientation filter '{orientation_filter_label}' applied. Current URL: {page.url}")
+            except Exception as e_orient_filter:
+                 logger.warning(f"Could not apply video orientation filter '{orientation_filter_label}': {e_orient_filter}")
+
+        if params.resolutions:
+            for res in params.resolutions:
+                res_aria_label = ""
+                if res == EnvatoVideoResolution.HD_1080P:
+                    res_aria_label = "1080p (Full HD)"
+                elif res == EnvatoVideoResolution.UHD_4K:
+                    res_aria_label = "4K (UHD)"
+                elif res == EnvatoVideoResolution.HD_2K:
+                    res_aria_label = "2K"
+
+                if res_aria_label:
+                    logger.info(f"Attempting to apply video resolution filter: '{res_aria_label}'")
+                    try:
+                        res_filter_locator = page.locator(f'a[role="checkbox"][aria-label="{res_aria_label}"]')
+                        await res_filter_locator.click()
+                        await page.wait_for_load_state("networkidle", timeout=20000)
+                        logger.info(f"Video resolution filter '{res_aria_label}' applied. Current URL: {page.url}")
+                    except Exception as e_res_filter:
+                        logger.warning(f"Could not apply video resolution filter '{res_aria_label}': {e_res_filter}")
+                else:
+                    logger.warning(f"No aria-label mapping for resolution enum value: {res.value}")
+
+        logger.info("All UI filters applied (or skipped). Parsing search results.")
+        return await _parse_envato_item_search_results_page(page, params.keyword, "video", num_results_to_save)
+
+    except Exception as e_ui_search:
+        logger.error(f"Error during Envato stock video search by UI for '{params.keyword}': {e_ui_search}")
+        return []
+
+async def search_envato_photos_by_ui(page: Page, params: EnvatoPhotoSearchParams, num_results_to_save: int = 5) -> List[Dict[str, Any]]:
+    """
+    Searches for photos on Envato Elements by interacting with the UI (dropdown, search box, filters).
+    """
+    logger.info(f"Starting UI-based photo search for keyword: '{params.keyword}' with params: {params.model_dump_json(indent=2)}")
+    try:
+        current_url = page.url
+        if "elements.envato.com" not in current_url:
+            logger.info("Not on Envato Elements domain, navigating to homepage first.")
+            await page.goto("https://elements.envato.com/", wait_until="networkidle")
+        elif not (current_url == "https://elements.envato.com/" or current_url == "https://elements.envato.com" or "/s/" in current_url):
+             logger.info(f"Current URL is {current_url}. Navigating to homepage for clean search start.")
+             await page.goto("https://elements.envato.com/", wait_until="networkidle")
+
+        logger.info(f"Ensuring search input is visible before interacting with category dropdown. Current URL: {page.url}")
+        search_input_selector = 'input[data-testid="search-form-input"]'
+        await page.wait_for_selector(search_input_selector, state="visible", timeout=20000)
+        logger.info("Search input is visible.")
+
+        search_category_dropdown_trigger_selector = 'button[data-testid="search-filter-button"]'
+        photos_option_locator_factory = lambda page_obj: page_obj.locator('[data-testid="search-box"]').get_by_role('button', name='Photos')
+
+        logger.info(f"Step 1: Clicking search category dropdown: {search_category_dropdown_trigger_selector}")
+        await page.locator(search_category_dropdown_trigger_selector).click()
+
+        photo_option_locator = photos_option_locator_factory(page)
+        logger.info(f"Waiting for Photos option (using factory) to be visible after clicking dropdown.")
+        await photo_option_locator.wait_for(state="visible", timeout=10000)
+
+        logger.info(f"Step 2: Selecting 'Photos' option (using factory)")
+        await photo_option_locator.click()
+        await page.wait_for_timeout(1000) # Pause for selection to register and UI to update
+
+        logger.info(f"Step 3: Entering keyword '{params.keyword}' into search input: {search_input_selector}")
+        await page.fill(search_input_selector, params.keyword)
+        logger.info("Step 4: Pressing Enter to submit search.")
+        await page.press(search_input_selector, "Enter")
+        await page.wait_for_load_state("networkidle", timeout=30000)
+        logger.info(f"Search submitted. Current URL: {page.url}. Now applying filters.")
+
+        # Apply Photo Filters (on the results page)
+        if params.orientations:
+            for orientation in params.orientations:
+                orientation_label = orientation.value.title()
+                logger.info(f"Attempting to apply photo orientation filter: '{orientation_label}'")
+                try:
+                    orientation_filter_locator = page.locator(f'a[role="checkbox"][aria-label="{orientation_label}"]')
+                    await orientation_filter_locator.click()
+                    await page.wait_for_load_state("networkidle", timeout=20000)
+                    logger.info(f"Photo orientation filter '{orientation_label}' applied. Current URL: {page.url}")
+                except Exception as e_orient_filter:
+                    logger.warning(f"Could not apply photo orientation filter '{orientation_label}': {e_orient_filter}")
+
+        if params.number_of_people:
+            people_label = ""
+            if params.number_of_people == EnvatoPhotoNumberOfPeople.NO_PEOPLE:
+                people_label = "No People"
+            elif params.number_of_people == EnvatoPhotoNumberOfPeople.ONE_PERSON:
+                people_label = "1 person"
+            elif params.number_of_people == EnvatoPhotoNumberOfPeople.TWO_PEOPLE:
+                people_label = "2 people"
+            elif params.number_of_people == EnvatoPhotoNumberOfPeople.THREE_PLUS_PEOPLE:
+                people_label = "3+ people"
+
+            if people_label:
+                logger.info(f"Attempting to apply number of people filter: '{people_label}'")
+                try:
+                    people_filter_locator = page.locator(f'a[role="checkbox"][aria-label="{people_label}"]')
+                    await people_filter_locator.click()
+                    await page.wait_for_load_state("networkidle", timeout=20000)
+                    logger.info(f"Number of people filter '{people_label}' applied. Current URL: {page.url}")
+                except Exception as e_people_filter:
+                    logger.warning(f"Could not apply number of people filter '{people_label}': {e_people_filter}")
+            else:
+                logger.warning(f"No aria-label mapping for number_of_people enum value: {params.number_of_people.value}")
+
+        logger.info("All UI filters applied (or skipped). Parsing search results.")
+        return await _parse_envato_item_search_results_page(page, params.keyword, "photo", num_results_to_save)
+
+    except Exception as e_ui_search:
+        logger.error(f"Error during Envato photo search by UI for '{params.keyword}': {e_ui_search}")
         return []
 
 async def logout_from_envato(page: Page) -> None:

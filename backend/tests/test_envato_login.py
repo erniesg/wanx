@@ -13,7 +13,9 @@ from backend.text_to_video.envato_client import (
     logout_from_envato,
     download_envato_asset,
     search_envato_stock_video_by_url,
-    search_envato_photos_by_url
+    search_envato_photos_by_url,
+    search_envato_stock_video_by_ui,
+    search_envato_photos_by_ui
 )
 from backend.text_to_video.models.envato_models import (
     EnvatoMusicSearchParams, EnvatoMusicGenre, EnvatoMusicMood, EnvatoMusicTempo, EnvatoMusicTheme,
@@ -333,6 +335,148 @@ async def test_envato_photo_download(tmp_path: Path):
                 print(f"Single image file downloaded: {download_path_obj}")
             else:
                 pytest.fail(f"Downloaded path {download_path_obj} is neither a recognized file nor a directory.")
+
+        finally:
+            if page: await logout_from_envato(page)
+            if browser: await browser.close()
+
+@pytest.mark.asyncio
+async def test_envato_stock_video_download_by_ui(tmp_path: Path):
+    """Test searching stock video via UI, downloading, and verifying."""
+    username, password = get_envato_credentials()
+    if not username or not password:
+        pytest.skip("ENVATO_USERNAME or ENVATO_PASSWORD not set. Skipping stock video UI download test.")
+
+    project_license_value_fixture = os.getenv("ENVATO_TEST_PROJECT_LICENSE_VALUE", "ai-video")
+    browser = None
+    page: Optional[Page] = None
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(headless=False) # Start headless, change to False for debugging UI
+            page = await browser.new_page()
+            await login_to_envato(page, username, password)
+
+            search_params = EnvatoStockVideoSearchParams(
+                keyword="futuristic cityscape",
+                category=EnvatoVideoCategory.STOCK_FOOTAGE,
+                orientation=EnvatoVideoOrientation.HORIZONTAL,
+                resolutions=[EnvatoVideoResolution.HD_1080P]
+            )
+            num_results_to_save = 2 # Request fewer items for quicker UI test
+
+            download_directory_fixture = tmp_path / "envato_video_ui_assets"
+            download_directory_fixture.mkdir(parents=True, exist_ok=True)
+
+            print(f"Starting UI video search for: {search_params.keyword}")
+            video_items = await search_envato_stock_video_by_ui(
+                page,
+                params=search_params,
+                num_results_to_save=num_results_to_save
+            )
+            print(f"UI Search found {len(video_items)} video items.")
+            assert video_items, "No video items found via UI search."
+
+            downloadable_items = [item for item in video_items if item.get("download_button_locator")]
+            assert downloadable_items, "No downloadable video items found from UI search results."
+
+            selected_item = random.choice(downloadable_items)
+            item_title = selected_item["title"]
+            download_button_locator = selected_item["download_button_locator"]
+            item_page_url = selected_item["item_page_url"]
+            print(f"Attempting to download video via UI search result: {item_title}")
+
+            download_path = await download_envato_asset(
+                page,
+                item_title=item_title,
+                download_button_locator=download_button_locator,
+                project_license_value=project_license_value_fixture,
+                download_directory=str(download_directory_fixture),
+                item_page_url=item_page_url,
+            )
+            assert download_path, "Download path was not returned for video (UI search)."
+            download_path_obj = Path(download_path)
+            assert download_path_obj.exists(), f"Download/extraction path {download_path_obj} does not exist (UI search)."
+
+            if download_path_obj.is_dir():
+                video_files_found = [f for ext in ("*.mp4", "*.mov") for f in download_path_obj.rglob(ext)]
+                assert video_files_found, f"No video files found in {download_path_obj} (UI search)."
+            elif download_path_obj.is_file():
+                assert download_path_obj.suffix.lower() in [".mp4", ".mov"], "Downloaded file is not a recognized video type (UI search)."
+            else:
+                pytest.fail(f"Downloaded path {download_path_obj} is neither file nor directory (UI search).")
+            print(f"Video asset '{item_title}' downloaded and verified successfully via UI search.")
+
+        finally:
+            if page: await logout_from_envato(page)
+            if browser: await browser.close()
+
+@pytest.mark.asyncio
+async def test_envato_photo_download_by_ui(tmp_path: Path):
+    """Test searching photos via UI, downloading, and verifying."""
+    username, password = get_envato_credentials()
+    if not username or not password:
+        pytest.skip("ENVATO_USERNAME or ENVATO_PASSWORD not set. Skipping photo UI download test.")
+
+    project_license_value_fixture = os.getenv("ENVATO_TEST_PROJECT_LICENSE_VALUE", "ai-video")
+    browser = None
+    page: Optional[Page] = None
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(headless=True) # Start headless, change to False for debugging UI
+            page = await browser.new_page()
+            await login_to_envato(page, username, password)
+
+            search_params = EnvatoPhotoSearchParams(
+                keyword="tropical beach sunset",
+                orientations=[EnvatoPhotoOrientation.LANDSCAPE],
+                number_of_people=EnvatoPhotoNumberOfPeople.NO_PEOPLE
+            )
+            num_results_to_save = 2
+
+            download_directory_fixture = tmp_path / "envato_photo_ui_assets"
+            download_directory_fixture.mkdir(parents=True, exist_ok=True)
+
+            print(f"Starting UI photo search for: {search_params.keyword}")
+            photo_items = await search_envato_photos_by_ui(
+                page,
+                params=search_params,
+                num_results_to_save=num_results_to_save
+            )
+            print(f"UI Search found {len(photo_items)} photo items.")
+            assert photo_items, "No photo items found via UI search."
+
+            downloadable_items = [item for item in photo_items if item.get("download_button_locator")]
+            assert downloadable_items, "No downloadable photo items found from UI search results."
+
+            selected_item = random.choice(downloadable_items)
+            item_title = selected_item["title"]
+            download_button_locator = selected_item["download_button_locator"]
+            item_page_url = selected_item["item_page_url"]
+            print(f"Attempting to download photo via UI search result: {item_title}")
+
+            download_path = await download_envato_asset(
+                page,
+                item_title=item_title,
+                download_button_locator=download_button_locator,
+                project_license_value=project_license_value_fixture,
+                download_directory=str(download_directory_fixture),
+                item_page_url=item_page_url,
+            )
+            assert download_path, "Download path was not returned for photo (UI search)."
+            download_path_obj = Path(download_path)
+            assert download_path_obj.exists(), f"Download/extraction path {download_path_obj} does not exist (UI search)."
+
+            image_extensions = (".jpg", ".jpeg", ".png")
+            if download_path_obj.is_dir():
+                image_files_found = [f for ext_pattern in [f"*{ext}" for ext in image_extensions] for f in download_path_obj.rglob(ext_pattern)]
+                assert image_files_found, f"No image files found in {download_path_obj} (UI search)."
+            elif download_path_obj.is_file():
+                assert download_path_obj.suffix.lower() in image_extensions, "Downloaded file is not recognized image type (UI search)."
+            else:
+                pytest.fail(f"Downloaded path {download_path_obj} is neither file nor directory (UI search).")
+            print(f"Photo asset '{item_title}' downloaded and verified successfully via UI search.")
 
         finally:
             if page: await logout_from_envato(page)
