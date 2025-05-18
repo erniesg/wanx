@@ -1,8 +1,20 @@
 import pytest
 import asyncio
-from playwright.async_api import async_playwright
+import os # For file cleanup
+import random # For selecting a random item
+from pathlib import Path # For path operations
+from playwright.async_api import async_playwright, Locator # Added Locator
+from typing import Optional # For type hinting
 
-from backend.text_to_video.envato_client import login_to_envato, get_envato_credentials, search_envato_music
+from backend.text_to_video.envato_client import (
+    login_to_envato,
+    get_envato_credentials,
+    search_envato_music_by_url,
+    logout_from_envato,
+    download_envato_asset,
+    search_envato_stock_video_by_url
+)
+from backend.text_to_video.models.envato_models import EnvatoMusicSearchParams, EnvatoMusicGenre, EnvatoMusicMood, EnvatoMusicTempo, EnvatoMusicTheme, EnvatoStockVideoSearchParams, EnvatoVideoCategory, EnvatoVideoOrientation, EnvatoVideoResolution
 
 @pytest.mark.asyncio
 async def test_envato_login_success():
@@ -11,72 +23,238 @@ async def test_envato_login_success():
     if not username or not password:
         pytest.skip("ENVATO_USERNAME or ENVATO_PASSWORD not set in .env. Skipping login test.")
 
+    browser = None # Initialize browser variable
+    page: Optional[Page] = None # Define page here to be accessible in finally
     async with async_playwright() as p:
-        # browser = await p.chromium.launch(headless=False)  # For debugging: shows browser
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
+        try:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
 
-        success = await login_to_envato(page, username, password)
+            success = await login_to_envato(page, username, password)
 
-        assert success is True, "Envato login failed. Check credentials or selectors."
-        # A more robust check could be to verify an element that only appears when logged in,
-        # or that the URL is as expected after login.
-        assert "elements.envato.com" in page.url, f"Expected to be on elements.envato.com, but was on {page.url}"
-        # Add a check for a known element on the dashboard if possible
-        # For example, a user avatar or a specific dashboard link
-        # is_avatar_visible = await page.is_visible("selector-for-user-avatar")
-        # assert is_avatar_visible, "User avatar not visible after login, login might have failed silently."
-
-        await browser.close()
+            assert success is True, "Envato login failed. Check credentials or selectors."
+            assert "elements.envato.com" in page.url, f"Expected to be on elements.envato.com, but was on {page.url}"
+        finally:
+            if page: # Check if page was initialized
+                await logout_from_envato(page)
+            if browser:
+                await browser.close()
 
 @pytest.mark.asyncio
-async def test_envato_music_search():
-    """Tests music search on Envato Elements after logging in."""
+async def test_envato_music_search_by_url():
+    """Tests music search on Envato Elements using direct URL construction after logging in."""
     username, password = get_envato_credentials()
     if not username or not password:
-        pytest.skip("ENVATO_USERNAME or ENVATO_PASSWORD not set in .env. Skipping music search test.")
+        pytest.skip("ENVATO_USERNAME or ENVATO_PASSWORD not set in .env. Skipping URL search test.")
+
+    browser = None # Initialize browser variable
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+
+            login_success = await login_to_envato(page, username, password)
+            assert login_success, "Login failed, cannot proceed with URL music search test."
+            print("Login successful for URL music search test.")
+
+            search_params = EnvatoMusicSearchParams(
+                keyword="energetic tech presentation",
+                genres=[EnvatoMusicGenre.ELECTRONIC, EnvatoMusicGenre.CORPORATE],
+                moods=[EnvatoMusicMood.UPBEAT, EnvatoMusicMood.INSPIRING],
+                tempos=[EnvatoMusicTempo.UPBEAT, EnvatoMusicTempo.FAST],
+                max_length="03:00",
+                min_length="00:30"
+            )
+            num_results = 2
+
+            print(f"Performing music search by URL for keyword: '{search_params.keyword}' with params, asking for {num_results} results.")
+            constructed_url_path = search_params.build_url_path()
+            print(f"Constructed URL path: https://elements.envato.com{constructed_url_path}")
+
+            music_items = await search_envato_music_by_url(page, search_params, num_results_to_save=num_results)
+
+            print(f"URL Search returned {len(music_items)} items.")
+            for i, item in enumerate(music_items):
+                print(f"Item {i+1}: Title: '{item.get('title')}', URL: '{item.get('item_page_url')}'")
+
+            assert isinstance(music_items, list), "URL Search function should return a list."
+
+            if music_items:
+                assert len(music_items) <= num_results, f"Expected at most {num_results} items from URL search, but got {len(music_items)}."
+                for item in music_items:
+                    assert isinstance(item, dict), "Each item in the URL search results should be a dictionary."
+                    assert "title" in item, "Each item dictionary from URL search must have a 'title' key."
+                    assert "item_page_url" in item, "Each item dictionary from URL search must have an 'item_page_url' key."
+                    item_url = item["item_page_url"] # Extract for clarity
+                    assert item_url.startswith("https://elements.envato.com/"), \
+                           f"Item URL '{item_url}' does not seem to be a valid Envato Elements item URL."
+            else:
+                print(f"No music items found via URL search for keyword '{search_params.keyword}'. This could be due to restrictive filters or an issue.")
+
+            # Test with only keyword
+            search_params_keyword_only = EnvatoMusicSearchParams(keyword="simple piano mood")
+            print(f"Performing music search by URL for keyword: '{search_params_keyword_only.keyword}' (no extra params), asking for {num_results} results.")
+            constructed_url_path_ko = search_params_keyword_only.build_url_path()
+            print(f"Constructed URL path: https://elements.envato.com{constructed_url_path_ko}")
+            music_items_ko = await search_envato_music_by_url(page, search_params_keyword_only, num_results_to_save=num_results)
+            print(f"URL Search (keyword only) returned {len(music_items_ko)} items.")
+            for i, item in enumerate(music_items_ko):
+                print(f"Item {i+1} (KO): Title: '{item.get('title')}', URL: '{item.get('item_page_url')}'")
+            assert isinstance(music_items_ko, list), "URL Search function (keyword only) should return a list."
+
+        finally:
+            if browser:
+                await logout_from_envato(page)
+                await browser.close()
+
+@pytest.mark.asyncio
+async def test_envato_music_download(tmp_path: Path):
+    """Tests downloading and unzipping a music asset from Envato Elements."""
+    username, password = get_envato_credentials()
+    if not username or not password:
+        pytest.skip("ENVATO_USERNAME or ENVATO_PASSWORD not set. Skipping download test.")
+
+    project_license_val_for_test = os.getenv("ENVATO_TEST_PROJECT_LICENSE_VALUE", "ai-video")
+    if project_license_val_for_test == "ai-video" and not os.getenv("ENVATO_TEST_PROJECT_LICENSE_VALUE"):
+        print(f"WARN: Using default 'ai-video' for project license. Set ENVATO_TEST_PROJECT_LICENSE_VALUE if different.")
+
+    browser = None
+    page: Optional[Page] = None
+    download_output_path_str: Optional[str] = None
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True) # Use headless=False for debugging
-        page = await browser.new_page()
+        try:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
 
-        # 1. Login first
-        login_success = await login_to_envato(page, username, password)
-        assert login_success, "Login failed, cannot proceed with music search test."
-        print("Login successful for music search test.")
+            login_success = await login_to_envato(page, username, password)
+            assert login_success, "Login failed for download test."
 
-        # 2. Perform search
-        test_keyword = "uplifting corporate"
-        num_results = 3
-        print(f"Performing music search for keyword: '{test_keyword}', asking for {num_results} results.")
+            search_keyword = "short upbeat ident logo"
+            search_params = EnvatoMusicSearchParams(keyword=search_keyword, max_length="00:30", min_length="00:05")
+            music_items = await search_envato_music_by_url(page, search_params, num_results_to_save=3)
+            assert music_items, f"No music items found for '{search_keyword}'."
+            downloadable_items = [item for item in music_items if item.get("download_button_locator")]
+            assert downloadable_items, f"No items with download button for '{search_keyword}'."
+            item_to_download = random.choice(downloadable_items)
+            item_title = item_to_download["title"]
+            button_locator = item_to_download["download_button_locator"]
+            item_detail_url = item_to_download["item_page_url"]
+            download_and_extract_base_dir = tmp_path / "envato_assets"
+            download_and_extract_base_dir.mkdir(exist_ok=True)
 
-        # Ensure the page is on the correct domain before search, login_to_envato should handle this.
-        # If not, navigate: await page.goto("https://elements.envato.com/", wait_until="networkidle")
+            download_output_path_str = await download_envato_asset(
+                page, item_title, button_locator, project_license_val_for_test,
+                str(download_and_extract_base_dir), item_page_url=item_detail_url
+            )
+            assert download_output_path_str is not None, f"DL function returned None for '{item_title}'."
 
-        music_items = await search_envato_music(page, test_keyword, num_results_to_save=num_results)
+            output_path = Path(download_output_path_str)
+            assert output_path.is_dir(), f"Expected dir path for extracted files, got: {output_path}"
+            assert output_path.exists(), f"Extraction directory does not exist: {output_path}"
 
-        print(f"Search returned {len(music_items)} items.")
-        for i, item in enumerate(music_items):
-            print(f"Item {i+1}: Title: '{item.get('title')}', URL: '{item.get('item_page_url')}'")
+            # Check if the extraction directory and its potential subdirectories contain audio files
+            # Uses rglob to search recursively
+            found_audio_files = []
+            for ext in ('*.mp3', '*.wav', '*.MP3', '*.WAV'): # Check for common audio extensions, case-insensitive friendly
+                found_audio_files.extend(list(output_path.rglob(ext)))
 
-        assert isinstance(music_items, list), "Search function should return a list."
+            assert found_audio_files, f"No .mp3 or .wav files found recursively in {output_path}. Contents: {list(output_path.glob('**/*'))}"
+            print(f"Successfully downloaded, unzipped '{item_title}'. Found audio file(s): {[f.name for f in found_audio_files]} in {output_path}.")
 
-        if music_items: # Only check item structure if results are found
-            # We expect up to num_results, but it could be less if fewer are available.
-            assert len(music_items) <= num_results, f"Expected at most {num_results} items, but got {len(music_items)}."
-            for item in music_items:
-                assert isinstance(item, dict), "Each item in the search results should be a dictionary."
-                assert "title" in item, "Each item dictionary must have a 'title' key."
-                assert "item_page_url" in item, "Each item dictionary must have an 'item_page_url' key."
-                assert isinstance(item["title"], str), "Item title should be a string."
-                assert isinstance(item["item_page_url"], str), "Item page URL should be a string."
-                assert item["item_page_url"].startswith("https://elements.envato.com/"), \
-                       f"Item URL '{item['item_page_url']}' does not seem to be a valid Envato Elements item URL."
-        else:
-            print(f"No music items found for keyword '{test_keyword}'. This might be expected or indicate an issue.")
-            # Depending on the keyword, 0 results might be valid. No strict assertion for non-empty here.
+        finally:
+            if page: await logout_from_envato(page)
+            if browser: await browser.close()
 
-        await browser.close()
+@pytest.mark.asyncio
+async def test_envato_stock_video_download(tmp_path: Path):
+    """Test searching for stock video, downloading one item, handling potential zips, and verifying video files."""
+    username, password = get_envato_credentials()
+    if not username or not password:
+        pytest.skip("ENVATO_USERNAME or ENVATO_PASSWORD not set. Skipping stock video download test.")
+
+    project_license_value_fixture = os.getenv("ENVATO_TEST_PROJECT_LICENSE_VALUE", "ai-video")
+    if project_license_value_fixture == "ai-video" and not os.getenv("ENVATO_TEST_PROJECT_LICENSE_VALUE"):
+        print(f"WARN: Using default 'ai-video' for project license. Set ENVATO_TEST_PROJECT_LICENSE_VALUE if different.")
+
+    browser = None
+    page: Optional[Page] = None
+    download_output_path_str: Optional[str] = None
+
+    async with async_playwright() as p:
+        try:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+
+            await login_to_envato(page, username, password)
+            search_params = EnvatoStockVideoSearchParams(
+                keyword="technology",
+                category=EnvatoVideoCategory.STOCK_FOOTAGE,
+            )
+            num_results_to_save = 5
+            print(f"Searching for stock video with params: {search_params.model_dump_json(indent=2)}")
+
+            # Use a specific subdirectory within tmp_path for this test's downloads
+            download_directory_fixture = tmp_path / "envato_video_assets"
+            download_directory_fixture.mkdir(parents=True, exist_ok=True)
+
+            video_items = await search_envato_stock_video_by_url(
+                page,
+                params=search_params,
+                num_results_to_save=num_results_to_save
+            )
+            print(f"Found {len(video_items)} video items.")
+            assert video_items, "No video items found for the given search criteria."
+
+            downloadable_items = [item for item in video_items if item.get("download_button_locator")]
+            assert downloadable_items, "No downloadable video items found in the search results."
+
+            selected_item = random.choice(downloadable_items)
+            item_title = selected_item["title"]
+            download_button_locator = selected_item["download_button_locator"]
+            item_page_url = selected_item["item_page_url"]
+
+            print(f"Attempting to download video: {item_title}")
+
+            download_path = await download_envato_asset(
+                page,
+                item_title=item_title,
+                download_button_locator=download_button_locator,
+                project_license_value=project_license_value_fixture,
+                download_directory=str(download_directory_fixture),
+                item_page_url=item_page_url,
+            )
+
+            assert download_path, "Download path was not returned."
+            download_path_obj = Path(download_path)
+            print(f"Asset supposedly downloaded/extracted to: {download_path_obj}")
+
+            assert download_path_obj.exists(), f"Download/extraction path {download_path_obj} does not exist."
+
+            if download_path_obj.is_file() and download_path_obj.suffix.lower() == ".zip":
+                pytest.fail("download_envato_asset returned a zip file path, but should return extraction directory path if unzipped.")
+            elif download_path_obj.is_dir():
+                video_files_found = []
+                for ext in ("*.mp4", "*.mov", "*.avi", "*.mkv"):
+                    video_files_found.extend(list(download_path_obj.rglob(ext)))
+                print(f"Video files found in {download_path_obj}: {video_files_found}")
+                assert video_files_found, f"No video files (.mp4, .mov, .avi, .mkv) found in {download_path_obj} or its subdirectories."
+            elif download_path_obj.is_file():
+                allowed_extensions = [".mp4", ".mov", ".avi", ".mkv"]
+                assert download_path_obj.suffix.lower() in allowed_extensions, f"Downloaded file {download_path_obj} is not a recognized video file type."
+                print(f"Single video file downloaded: {download_path_obj}")
+            else:
+                pytest.fail(f"Downloaded path {download_path_obj} is neither a recognized file nor a directory.")
+
+        finally:
+            if page: await logout_from_envato(page)
+            if browser: await browser.close()
+
+# Note on ENVATO_TEST_PROJECT_LICENSE_VALUE:
+# The download test relies on a project existing in your Envato Elements account
+# that corresponds to the project_license_val_for_test. If you use the default "ai-video",
+# ensure you have a project named (or with a value attribute, inspect in browser) "ai-video".
+# Otherwise, set the ENVATO_TEST_PROJECT_LICENSE_VALUE in your .env file to an existing project's value.
 
 # To run this test:
 # 1. Ensure you have .env file in the project root with ENVATO_USERNAME and ENVATO_PASSWORD.
