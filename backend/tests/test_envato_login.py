@@ -353,15 +353,15 @@ async def test_envato_stock_video_download_by_ui(tmp_path: Path):
 
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=True) # Start headless, change to False for debugging UI
+            browser = await p.chromium.launch(headless=False) # Start headless, change to False for debugging UI
             page = await browser.new_page()
             await login_to_envato(page, username, password)
 
             search_params = EnvatoStockVideoSearchParams(
                 keyword="futuristic cityscape",
                 category=EnvatoVideoCategory.STOCK_FOOTAGE,
-                orientation=EnvatoVideoOrientation.HORIZONTAL,
-                resolutions=[EnvatoVideoResolution.HD_1080P]
+                orientation=EnvatoVideoOrientation.HORIZONTAL, # Add back orientation filter
+                resolutions=[EnvatoVideoResolution.HD_1080P]  # Add back resolution filter
             )
             num_results_to_save = 2 # Request fewer items for quicker UI test
 
@@ -424,14 +424,14 @@ async def test_envato_photo_download_by_ui(tmp_path: Path):
 
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=True) # Start headless, change to False for debugging UI
+            browser = await p.chromium.launch(headless=False) # Start headless, change to False for debugging UI
             page = await browser.new_page()
             await login_to_envato(page, username, password)
 
             search_params = EnvatoPhotoSearchParams(
                 keyword="tropical beach sunset",
                 orientations=[EnvatoPhotoOrientation.LANDSCAPE],
-                number_of_people=EnvatoPhotoNumberOfPeople.NO_PEOPLE
+                number_of_people=[EnvatoPhotoNumberOfPeople.NO_PEOPLE] # Pass as a list
             )
             num_results_to_save = 2
 

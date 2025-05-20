@@ -360,18 +360,28 @@ async def search_envato_stock_video_by_ui(page: Page, params: EnvatoStockVideoSe
 
         # 3. Apply filters (on the results page)
         if params.category:
+            logger.info(f"Attempting to apply category filter. params.category is: {params.category} (type: {type(params.category)})")
+            # The category.value should directly give the slug (e.g., "stock-footage")
+            # The .replace('-', ' ').title() converts it to the aria-label format (e.g., "Stock Footage")
             filter_aria_label = params.category.value.replace('-', ' ').title()
-            if params.category == EnvatoVideoCategory.VIDEO_TEMPLATES:
-                filter_aria_label = "Video Templates"
+            logger.info(f"Category is '{params.category.name}', using filter_aria_label: '{filter_aria_label}'")
 
-            logger.info(f"Attempting to apply video category filter: '{filter_aria_label}'")
+            logger.info(f"Attempting to apply video category filter with aria-label: '{filter_aria_label}'")
             try:
                 category_filter_locator = page.locator(f'a[role="checkbox"][aria-label="{filter_aria_label}"]')
                 await category_filter_locator.click()
                 await page.wait_for_load_state("networkidle", timeout=20000)
                 logger.info(f"Video category filter '{filter_aria_label}' applied. Current URL: {page.url}")
             except Exception as e_cat_filter:
-                logger.warning(f"Could not apply video category filter '{filter_aria_label}': {e_cat_filter}")
+                logger.warning(f"Could not apply video category filter '{filter_aria_label}'. Details below.")
+                logger.warning(f"  Filter Exception Type: {type(e_cat_filter)}")
+                logger.warning(f"  Filter Exception Repr: {repr(e_cat_filter)}")
+                logger.warning(f"  Filter Exception Args: {e_cat_filter.args if hasattr(e_cat_filter, 'args') else 'N/A'}")
+                # It's possible this specific exception is the one causing the outer problem.
+                # We will re-raise it to see if the outer handler logs it as AttributeError('VIDEO_TEMPLATES')
+                # or if it gets caught and then a *new* AttributeError is raised somehow.
+                # For now, let's not re-raise, just log, to avoid changing current behavior too much.
+                # If this is the source, the screenshot from the outer handler should capture the page state when this filter failed.
 
         if params.orientation:
             orientation_filter_label = params.orientation.value.title()
@@ -425,6 +435,20 @@ async def search_envato_stock_video_by_ui(page: Page, params: EnvatoStockVideoSe
 
     except Exception as e_ui_search:
         logger.error(f"Error during Envato stock video search by UI for '{params.keyword}': {e_ui_search}")
+        logger.error(f"Exception type: {type(e_ui_search)}")
+        logger.error(f"Exception repr: {repr(e_ui_search)}")
+        logger.error(f"Exception arguments: {e_ui_search.args if hasattr(e_ui_search, 'args') else 'N/A'}")
+        try:
+            # Ensure LOGS_DIR is available and attempt to create if not (defensive)
+            if not LOGS_DIR.exists():
+                LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                logger.info(f"search_envato_stock_video_by_ui (exception block): Created logs directory at: {LOGS_DIR.absolute()}")
+
+            screenshot_path = LOGS_DIR / f"error_ui_search_video_failed_{sanitize_filename(params.keyword)}.png"
+            await page.screenshot(path=str(screenshot_path))
+            logger.error(f"Screenshot taken due to UI search error: {screenshot_path}")
+        except Exception as e_screenshot:
+            logger.error(f"Failed to take screenshot during UI search exception handling: {e_screenshot}")
         return []
 
 async def search_envato_photos_by_ui(page: Page, params: EnvatoPhotoSearchParams, num_results_to_save: int = 5) -> List[Dict[str, Any]]:
@@ -659,11 +683,11 @@ async def download_envato_asset(
             # Try finding radio button within the modal first, then fall back to page-wide search if necessary
             radio_button_locator_in_modal = modal_container_locator.locator(project_radio_selector)
             if await radio_button_locator_in_modal.count() > 0:
-                 await radio_button_locator_in_modal.wait_for(state="visible", timeout=15000) # Wait for it to be visible in modal
+                 await radio_button_locator_in_modal.wait_for(state="visible", timeout=25000) # Increased timeout
                  radio_button_to_check = radio_button_locator_in_modal
             else:
                  logger.info("Radio button not immediately found in modal container, trying page-wide search.")
-                 await page.wait_for_selector(project_radio_selector, timeout=15000, state="visible")
+                 await page.wait_for_selector(project_radio_selector, timeout=25000, state="visible") # Increased timeout
                  radio_button_to_check = page.locator(project_radio_selector)
 
             # Check if the selected locator is indeed visible before interacting
