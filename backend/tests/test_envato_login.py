@@ -353,7 +353,7 @@ async def test_envato_stock_video_download_by_ui(tmp_path: Path):
 
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.launch(headless=False) # Start headless, change to False for debugging UI
+            browser = await p.chromium.launch(headless=True) # Start headless, change to False for debugging UI
             page = await browser.new_page()
             await login_to_envato(page, username, password)
 

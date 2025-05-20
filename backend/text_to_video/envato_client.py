@@ -15,6 +15,15 @@ from backend.text_to_video.models.envato_models import EnvatoMusicSearchParams, 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Define an absolute path for the logs directory
+# __file__ is the path to the current script (envato_client.py)
+# .resolve() makes it an absolute path
+# .parent gives the directory of the script (backend/text_to_video)
+# .parent again gives the parent of that (backend)
+# / "logs" appends the logs directory name
+LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+logger.info(f"Global LOGS_DIR defined as: {LOGS_DIR.absolute()}")
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -76,113 +85,161 @@ async def login_to_envato(page: Page, username: str, password: str) -> bool:
         # await page.screenshot(path="envato_login_error.png")
         return False
 
-async def _parse_envato_item_search_results_page(page: Page, keyword_identifier: str, item_type: str, max_items_to_return: int) -> List[Dict[str, Any]]:
+async def _parse_envato_item_search_results_page(page: Page, keyword_identifier: str, item_type: str, num_results_to_save: int) -> List[Dict[str, Any]]:
     """
-    Private helper to parse item cards from an Envato Elements search results page (audio or video).
-    Finds all title links, then for each, finds its encapsulating card and the download button within that card.
+    Private helper to parse item cards from an Envato Elements search results page (audio, video, or photo).
+    Finds all item cards based on item_type, then extracts title and download button from each card.
     Args:
         page: Playwright Page object, assumed to be on a search results page.
         keyword_identifier: The original keyword or a descriptor for logging.
         item_type: 'audio', 'video', or 'photo' for logging.
-        max_items_to_return: Max number of successfully parsed items to return.
-    Returns:
-        A list of dictionaries, each containing 'title', 'item_page_url', and 'download_button_locator'.
+        num_results_to_save: Max number of successfully parsed items to return.
     """
-    all_successfully_parsed_items: List[Dict[str, Any]] = []
-    title_link_selector = "a[data-testid='title-link']"
+    search_results: List[Dict[str, Any]] = []
+
+    # Selectors for elements within each card
+    title_link_selector_in_card = "a[data-testid='title-link']"
     download_button_selector_in_card = "button[data-testid='button-download']"
 
-    # XPath to find a suitable ancestor card from a title link.
-    # Looks for article, li, or specific types of divs.
-    card_ancestor_xpath = "ancestor::*[self::article or self::li or (self::div and (contains(@data-testid, 'card') or @role='listitem' or contains(@class,'item') or contains(@class,'card') ))][1]"
+    # Determine the main card selector based on item_type
+    card_selector_str = ""
+    if item_type == "video":
+        card_selector_str = "[data-testid='video-card']"
+    elif item_type == "audio":
+        card_selector_str = "[data-testid='audio-card']"
+    elif item_type == "photo":
+        card_selector_str = "[data-testid='photo-card']"
+    else:
+        logger.error(f"Unknown item_type '{item_type}' for parsing. Cannot determine card selector.")
+        return []
 
-    logger.info(f"Starting to parse {item_type} results for '{keyword_identifier}'. Looking for title links: '{title_link_selector}'")
+    logger.info(f"_parse_envato_item_search_results_page: Received item_type='{item_type}', using card_selector_str='{card_selector_str}'")
+
+    # Use the global absolute LOGS_DIR
+    if not LOGS_DIR.exists():
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created logs directory at: {LOGS_DIR.absolute()}")
+        except Exception as e_mkdir:
+            logger.error(f"Failed to create logs directory at {LOGS_DIR.absolute()}: {e_mkdir}")
+            # Fallback or re-raise if critical, for now just log error and continue (screenshots might fail)
+    else:
+        logger.info(f"Using existing logs directory: {LOGS_DIR.absolute()}")
+
+    logger.info(f"Starting to parse {item_type} results for '{keyword_identifier}'. Looking for item cards: '{card_selector_str}'. Max items: {num_results_to_save}")
 
     try:
-        # Attempt to wait for at least one such link to ensure the page has likely loaded search results.
-        await page.wait_for_selector(title_link_selector, timeout=20000, state="attached")
-        link_locators = await page.locator(title_link_selector).all()
-        logger.info(f"Found {len(link_locators)} potential {item_type} title links on the page. Attempting to process all of them.")
+        logger.info(f"Waiting for at least one item card ('{card_selector_str}') to be attached...")
+        await page.wait_for_selector(card_selector_str, timeout=20000, state="attached")
+        logger.info(f"Initial item card found. Proceeding to locate all: '{card_selector_str}'")
 
-        if not link_locators:
-            logger.warning(f"No title links ('{title_link_selector}') found for '{keyword_identifier}' after initial check. Page might not have loaded correctly or selector needs update.")
-            # await page.screenshot(path=f"debug_no_title_links_{sanitize_filename(keyword_identifier)}.png")
+        card_locators = await page.locator(card_selector_str).all()
+        logger.info(f"Found {len(card_locators)} potential {item_type} item cards on the page. Attempting to process up to {num_results_to_save}.")
+
+        if not card_locators:
+            screenshot_path = LOGS_DIR / f"debug_parse_{item_type}_no_item_cards_{sanitize_filename(keyword_identifier)}.png"
+            html_dump_path = LOGS_DIR / f"debug_parse_{item_type}_no_item_cards_DOM_{sanitize_filename(keyword_identifier)}.html"
+            logger.warning(f"No item cards ('{card_selector_str}') found for '{keyword_identifier}' after initial check. Page might not have loaded correctly or selector needs update. Screenshot: {screenshot_path}, HTML Dump: {html_dump_path}")
+            await page.screenshot(path=str(screenshot_path))
+            try:
+                page_content = await page.content()
+                with open(html_dump_path, "w", encoding="utf-8") as f:
+                    f.write(page_content)
+                logger.info(f"Full page HTML content dumped to {html_dump_path}")
+            except Exception as e_html_dump:
+                logger.error(f"Failed to dump page HTML: {e_html_dump}")
             return []
 
-        for i, link_locator in enumerate(link_locators):
-            # This explicit check for max_items_to_return is removed here.
-            # We process all, then slice later.
+        for i, card_locator in enumerate(card_locators):
+            if len(search_results) >= num_results_to_save:
+                logger.info(f"Reached max {num_results_to_save} items to save. Stopping parse for '{keyword_identifier}'.")
+                break
 
-            item_page_url = "N/A" # Initialize for error logging
-            title_text = f"Envato {item_type.capitalize()} Item (Processing {i+1})" # Initialize for error logging
+            item_page_url = "N/A"
+            title_text = f"Envato {item_type.capitalize()} Item (Processing Card {i+1})"
+
             try:
-                if await link_locator.count() == 0:
-                    logger.warning(f"Link {i+1} ({item_type}): Locator became invalid or detached. Skipping.")
+                if not await card_locator.is_visible(): # Check if the card itself is visible
+                    logger.warning(f"Card {i+1} ({item_type}): Card locator found but card is not visible. Skipping.")
+                    # card_locator.screenshot(path=str(logs_dir / f"debug_parse_{item_type}_card_not_visible_{i+1}.png")) # Optional: screenshot non-visible card
                     continue
 
-                item_page_url_relative = await link_locator.get_attribute("href")
+                title_link_locator = card_locator.locator(title_link_selector_in_card)
+
+                # Explicitly wait for the title link to be present and visible *within this card*
+                try:
+                    await title_link_locator.wait_for(state="visible", timeout=5000) # Short timeout for already-scoped element
+                except Exception as e_title_wait:
+                    screenshot_path_title_not_visible = LOGS_DIR / f"debug_parse_{item_type}_title_not_visible_in_card{i+1}_{sanitize_filename(keyword_identifier)}.png"
+                    logger.warning(f"Card {i+1} ({item_type}): Title link ('{title_link_selector_in_card}') in card was not visible after explicit 5s wait. Error: {e_title_wait}. Skipping card. Screenshot: {screenshot_path_title_not_visible}")
+                    await card_locator.screenshot(path=str(screenshot_path_title_not_visible))
+                    continue
+
+                download_button_locator_in_card = card_locator.locator(download_button_selector_in_card)
+
+                if await title_link_locator.count() == 0: # This check might be redundant now with wait_for visible, but keep for safety
+                    screenshot_path = LOGS_DIR / f"debug_parse_{item_type}_no_title_in_card{i+1}_{sanitize_filename(keyword_identifier)}.png"
+                    logger.warning(f"Card {i+1} ({item_type}): Title link ('{title_link_selector_in_card}') not found within card. Skipping. Screenshot: {screenshot_path}")
+                    await card_locator.screenshot(path=str(screenshot_path))
+                    continue
+
+                item_page_url_relative = await title_link_locator.get_attribute("href")
                 if not item_page_url_relative:
-                    logger.warning(f"Link {i+1} ({item_type}): Could not find href attribute. Skipping.")
+                    logger.warning(f"Card {i+1} ({item_type}): Could not find href attribute for title link within card. Skipping.")
                     continue
                 item_page_url = urljoin(page.url, item_page_url_relative)
 
-                # Try multiple ways to get the title, prioritizing 'title' attribute, then specific span, then general text_content
-                title_text_from_attr = await link_locator.get_attribute("title")
+                title_text_from_attr = await title_link_locator.get_attribute("title")
                 title_text_from_span = ""
-                # Check for common patterns where title is inside a span or div > span within the link
-                if await link_locator.locator("span").count() > 0:
-                     title_text_from_span = await link_locator.locator("span").first.text_content()
-                elif await link_locator.locator("div > span").count() > 0: # E.g. photos <div class="iBWt5ZZN">shanghai city</div>
-                     title_text_from_span = await link_locator.locator("div > span").first.text_content()
-                title_text_from_content = await link_locator.text_content() # Fallback to any text inside the link
+                # Adjusted to locate span within the title_link_locator context
+                if await title_link_locator.locator("span").count() > 0:
+                     title_text_from_span = await title_link_locator.locator("span").first.text_content()
+                elif await title_link_locator.locator("div > span").count() > 0:
+                     title_text_from_span = await title_link_locator.locator("div > span").first.text_content()
+                title_text_from_content = await title_link_locator.text_content()
 
                 title_text = (title_text_from_attr or title_text_from_span or title_text_from_content or f"Envato {item_type.capitalize()} Item (No Title {i+1})").strip()
-                if not title_text: # Ensure title is not empty
-                    title_text = f"Envato {item_type.capitalize()} Item (Empty Title {i+1})"
+                if not title_text:
+                    title_text = f"Envato {item_type.capitalize()} Item (Empty Title Card {i+1})"
 
-
-                card_ancestor = link_locator.locator(f"xpath={card_ancestor_xpath}")
-
-                if await card_ancestor.count() == 0:
-                    logger.warning(f"Item '{title_text}' ({item_type}, Link {i+1}): Could not find a suitable card ancestor using XPath. URL: {item_page_url}. Skipping item.")
-                    # await link_locator.screenshot(path=f"debug_link_{i+1}_no_card_ancestor.png")
-                    continue
-
-                download_button_in_card = card_ancestor.locator(download_button_selector_in_card).first
-
-                if await download_button_in_card.count() > 0 and await download_button_in_card.is_visible():
-                    logger.debug(f"Successfully processed item {i+1} ({item_type}): '{title_text}'. Download button found in its card.")
-                    all_successfully_parsed_items.append({
+                if await download_button_locator_in_card.count() > 0 and await download_button_locator_in_card.is_visible():
+                    logger.debug(f"Successfully processed item {len(search_results)+1} from card {i+1} ({item_type}): '{title_text}'. Download button found.")
+                    search_results.append({
                         "title": title_text,
                         "item_page_url": item_page_url,
-                        "download_button_locator": download_button_in_card
+                        "download_button_locator": download_button_locator_in_card # This is now scoped to the card
                     })
                 else:
-                    logger.warning(f"Item '{title_text}' ({item_type}, Link {i+1}): Download button NOT found or not visible in its card. URL: {item_page_url}")
-                    # await card_ancestor.screenshot(path=f"debug_card_for_{sanitize_filename(title_text)}_no_dl_button.png")
+                    screenshot_path = LOGS_DIR / f"debug_parse_{item_type}_no_dl_button_in_card_{sanitize_filename(title_text)}.png"
+                    dl_button_exists = await download_button_locator_in_card.count() > 0
+                    dl_button_visible = await download_button_locator_in_card.is_visible() if dl_button_exists else False
+                    logger.warning(f"Item '{title_text}' (Card {i+1}, {item_type}): Download button ('{download_button_selector_in_card}') NOT found (exists: {dl_button_exists}, visible: {dl_button_visible}) within its card. URL: {item_page_url}. Screenshot: {screenshot_path}")
+                    await card_locator.screenshot(path=str(screenshot_path))
 
             except Exception as e_item_processing:
-                logger.error(f"Error processing {item_type} link {i+1} (Title: '{title_text}', URL: {item_page_url}): {e_item_processing}")
-                # Consider screenshotting near the link if an error occurs
-                # await link_locator.locator("xpath=..").screenshot(path=f"error_item_proc_{sanitize_filename(keyword_identifier)}_{i+1}.png")
+                screenshot_path = LOGS_DIR / f"error_parse_{item_type}_card_proc_card{i+1}_{sanitize_filename(keyword_identifier)}.png"
+                logger.error(f"Error processing {item_type} card {i+1} (Title: '{title_text}', URL: {item_page_url}): {e_item_processing}. Screenshot: {screenshot_path}")
+                try:
+                    await card_locator.screenshot(path=str(screenshot_path))
+                except Exception as e_screenshot:
+                    logger.error(f"Failed to take screenshot for item card processing error: {e_screenshot}")
 
-        logger.info(f"Finished iterating through all {len(link_locators)} potential items. Successfully processed {len(all_successfully_parsed_items)} {item_type} items with their details and download buttons for '{keyword_identifier}'.")
+        logger.info(f"Finished iterating through {len(card_locators)} potential item cards. Successfully processed {len(search_results)} {item_type} items for '{keyword_identifier}'.")
 
-        if not all_successfully_parsed_items:
-            logger.warning(f"No {item_type} items with visible download buttons were successfully parsed for '{keyword_identifier}' from the {len(link_locators)} potential links found.")
-            return []
+        if not search_results and len(card_locators) > 0: # Cards were found, but none yielded results
+            screenshot_path = LOGS_DIR / f"debug_parse_{item_type}_zero_results_from_cards_{sanitize_filename(keyword_identifier)}.png"
+            logger.warning(f"Found {len(card_locators)} {item_type} cards, but none were successfully parsed for '{keyword_identifier}'. Screenshot: {screenshot_path}")
+            await page.screenshot(path=str(screenshot_path)) # Screenshot of the whole page for context
+        elif not search_results: # No cards were found in the first place (already logged with screenshot)
+             logger.warning(f"No {item_type} items were successfully parsed as no cards were found for '{keyword_identifier}'.")
 
-        # Apply the max_items_to_return limit
-        if len(all_successfully_parsed_items) > max_items_to_return:
-            logger.info(f"Returning the first {max_items_to_return} of {len(all_successfully_parsed_items)} successfully processed {item_type} items for '{keyword_identifier}'.")
-            return all_successfully_parsed_items[:max_items_to_return]
-        else:
-            logger.info(f"Returning all {len(all_successfully_parsed_items)} successfully processed {item_type} items for '{keyword_identifier}' (requested up to {max_items_to_return}).")
-            return all_successfully_parsed_items
+        logger.info(f"Returning {len(search_results)} successfully processed {item_type} items for '{keyword_identifier}' (requested up to {num_results_to_save}).")
+        return search_results
 
     except Exception as e_page_parsing:
-        logger.error(f"General error parsing {item_type} results page for '{keyword_identifier}' (e.g., initial title links check failed or other page-level issue): {e_page_parsing}")
-        # await page.screenshot(path=f"error_page_parsing_titles_{sanitize_filename(keyword_identifier)}.png")
+        screenshot_path = LOGS_DIR / f"error_parse_{item_type}_page_level_cards_{sanitize_filename(keyword_identifier)}.png"
+        logger.error(f"General error parsing {item_type} results page when looking for cards ('{card_selector_str}') for '{keyword_identifier}': {e_page_parsing}. Screenshot: {screenshot_path}")
+        await page.screenshot(path=str(screenshot_path))
         return []
 
 async def search_envato_music_by_url(page: Page, params: EnvatoMusicSearchParams, num_results_to_save: int = 10) -> List[Dict[str, Any]]:
@@ -349,7 +406,21 @@ async def search_envato_stock_video_by_ui(page: Page, params: EnvatoStockVideoSe
                 else:
                     logger.warning(f"No aria-label mapping for resolution enum value: {res.value}")
 
-        logger.info("All UI filters applied (or skipped). Parsing search results.")
+        logger.info("All UI filters applied (or skipped). Taking screenshot before parsing search results.")
+        # Use the global absolute LOGS_DIR
+        if not LOGS_DIR.exists():
+            try:
+                LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                logger.info(f"search_envato_stock_video_by_ui: Created logs directory at: {LOGS_DIR.absolute()}")
+            except Exception as e_mkdir:
+                logger.error(f"search_envato_stock_video_by_ui: Failed to create logs directory at {LOGS_DIR.absolute()}: {e_mkdir}")
+        else:
+            logger.info(f"search_envato_stock_video_by_ui: Using existing logs directory: {LOGS_DIR.absolute()}")
+
+        pre_parse_screenshot_path = LOGS_DIR / f"ui_search_video_pre_parse_{sanitize_filename(params.keyword)}.png"
+        await page.screenshot(path=str(pre_parse_screenshot_path))
+        logger.info(f"Screenshot taken: {pre_parse_screenshot_path}")
+
         return await _parse_envato_item_search_results_page(page, params.keyword, "video", num_results_to_save)
 
     except Exception as e_ui_search:
@@ -432,7 +503,21 @@ async def search_envato_photos_by_ui(page: Page, params: EnvatoPhotoSearchParams
             else:
                 logger.warning(f"No aria-label mapping for number_of_people enum value: {params.number_of_people.value}")
 
-        logger.info("All UI filters applied (or skipped). Parsing search results.")
+        logger.info("All UI filters applied (or skipped). Taking screenshot before parsing photo search results.")
+        # Use the global absolute LOGS_DIR
+        if not LOGS_DIR.exists():
+            try:
+                LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                logger.info(f"search_envato_photos_by_ui: Created logs directory at: {LOGS_DIR.absolute()}")
+            except Exception as e_mkdir:
+                logger.error(f"search_envato_photos_by_ui: Failed to create logs directory at {LOGS_DIR.absolute()}: {e_mkdir}")
+        else:
+            logger.info(f"search_envato_photos_by_ui: Using existing logs directory: {LOGS_DIR.absolute()}")
+
+        pre_parse_screenshot_path = LOGS_DIR / f"ui_search_photo_pre_parse_{sanitize_filename(params.keyword)}.png"
+        await page.screenshot(path=str(pre_parse_screenshot_path))
+        logger.info(f"Screenshot taken: {pre_parse_screenshot_path}")
+
         return await _parse_envato_item_search_results_page(page, params.keyword, "photo", num_results_to_save)
 
     except Exception as e_ui_search:
