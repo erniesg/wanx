@@ -616,7 +616,7 @@ def unzip_asset(zip_path_str: str, base_extract_dir_str: str) -> Optional[str]:
 async def download_envato_asset(
     page: Page,
     item_title: str,
-    download_button_locator: Optional[Page],
+    download_button_locator: Optional[Locator],
     project_license_value: str,
     download_directory: str,
     item_page_url: Optional[str] = None
@@ -638,75 +638,160 @@ async def download_envato_asset(
         logger.error(f"Download attempt for '{item_title}' failed: No download button locator provided.")
         return None
 
+    # Ensure LOGS_DIR exists
+    if not LOGS_DIR.exists():
+        try:
+            LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            logger.info(f"download_envato_asset: Created logs directory at: {LOGS_DIR.absolute()}")
+        except Exception as e_mkdir:
+            logger.error(f"download_envato_asset: Failed to create logs directory at {LOGS_DIR.absolute()}: {e_mkdir}")
+            # Depending on policy, might want to return None or raise if logs are critical
+
     logger.info(f"Attempting to download asset: '{item_title}' using provided button locator.")
     Path(download_directory).mkdir(parents=True, exist_ok=True)
+
+    async def _check_and_get_modal_container(page_obj: Page, check_phase_description: str) -> Optional[Locator]:
+        """Helper to find and wait for the license modal."""
+        modal_container_locator_internal = None
+        # Prioritize more specific selectors if known, fallback to generic role/aria attributes
+        modal_selectors_to_try_internal = [
+            "div[data-testid='modal-dialog-license-content']", # Example of a potentially more specific selector
+            "div[role='dialog']",
+            "div[aria-modal='true']",
+            "section[aria-modal='true']"
+        ]
+        logger.info(f"({check_phase_description}) Waiting for license modal container to appear...")
+        for modal_selector_str in modal_selectors_to_try_internal:
+            try:
+                # Attempt to find a unique, visible modal. .first might be too greedy if multiple modals exist.
+                # However, for this context, it's usually one license modal.
+                current_modal_container = page_obj.locator(modal_selector_str).first
+                await current_modal_container.wait_for(state="visible", timeout=7000) # Original timeout
+                logger.info(f"({check_phase_description}) Modal container '{modal_selector_str}' found and visible.")
+                modal_container_locator_internal = current_modal_container
+                break # Found
+            except Exception:
+                logger.info(f"({check_phase_description}) Modal container '{modal_selector_str}' not found or not visible within 7s.")
+                continue
+        return modal_container_locator_internal
 
     try:
         # 1. Click the item's download button (on search results page) to open the license modal
         logger.info(f"Clicking item's download button to open modal (Title: {item_title})...")
         await download_button_locator.click()
-        # await page.wait_for_timeout(1000) # User removed this, respecting that for now
 
-        # 2. Handle the license pop-up modal
-        project_radio_selector = f'input[type="radio"][value="{project_license_value}"]'
+        modal_container_locator = await _check_and_get_modal_container(page, f"{item_title} - initial check")
 
-        logs_dir = Path("backend/logs")
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        screenshot_path = logs_dir / f"error_modal_radio_timeout_{sanitize_filename(item_title)}.png"
-
-        modal_visible = False
-        modal_container_locator = None
-        # Try to find and wait for the modal container first
-        modal_selectors_to_try = ["div[role='dialog']", "div[aria-modal='true']", "section[aria-modal='true']"]
-        logger.info("Waiting for license modal container to appear...")
-        for modal_selector_str in modal_selectors_to_try:
+        if not modal_container_locator:
+            logger.warning(f"License modal container did not appear for '{item_title}' after initial download click. Attempting re-login strategy.")
+            initial_modal_fail_screenshot = LOGS_DIR / f"modal_fail_initial_{sanitize_filename(item_title)}.png"
             try:
-                current_modal_container = page.locator(modal_selector_str).first
-                # Wait for this specific container to be visible, short timeout per selector
-                await current_modal_container.wait_for(state="visible", timeout=7000)
-                logger.info(f"Modal container '{modal_selector_str}' found and visible.")
-                modal_container_locator = current_modal_container
-                modal_visible = True
-                break
+                await page.screenshot(path=str(initial_modal_fail_screenshot))
+                logger.info(f"Screenshot taken: {initial_modal_fail_screenshot}")
+            except Exception as e_ss:
+                logger.error(f"Failed to take screenshot {initial_modal_fail_screenshot}: {e_ss}")
+
+            signin_link_locator = page.locator('a.MwuuClIh.REJFlh_K[href="/sign-in"]:has-text("Sign in")')
+
+            signin_link_visible = False
+            try:
+                # Check visibility with a timeout, in case the page is still loading or the element isn't there.
+                await signin_link_locator.wait_for(state="visible", timeout=5000)
+                signin_link_visible = True
             except Exception:
-                logger.info(f"Modal container '{modal_selector_str}' not found or not visible within 7s.")
-                continue
+                logger.info(f"'Sign in' link not visible or not found within 5s for '{item_title}'.")
 
-        if not modal_visible:
-            logger.error("License modal container did not appear after clicking download.")
-            await page.screenshot(path=str(screenshot_path))
-            return None
 
-        # Now that modal container is visible, try to find the radio button within it or on the page
+            if signin_link_visible:
+                logger.info(f"Found 'Sign in' link for '{item_title}'. Attempting to click and re-login.")
+                try:
+                    await signin_link_locator.click()
+                except Exception as e_click:
+                    logger.error(f"Failed to click 'Sign in' link for '{item_title}': {e_click}")
+                    # Screenshot already taken (initial_modal_fail_screenshot) might be relevant
+                    return None
+
+                username, password = get_envato_credentials()
+                if username and password:
+                    login_success = await login_to_envato(page, username, password)
+                    if login_success:
+                        logger.info(f"Re-login successful for '{item_title}'. Waiting briefly and checking for modal again.")
+                        await page.wait_for_timeout(3000) # Brief pause for UI to settle after login
+                        modal_container_locator = await _check_and_get_modal_container(page, f"{item_title} - after re-login")
+
+                        if not modal_container_locator:
+                            logger.error(f"License modal STILL did not appear for '{item_title}' after re-login.")
+                            relogin_modal_fail_screenshot = LOGS_DIR / f"modal_fail_after_relogin_{sanitize_filename(item_title)}.png"
+                            try:
+                                await page.screenshot(path=str(relogin_modal_fail_screenshot))
+                                logger.info(f"Screenshot taken: {relogin_modal_fail_screenshot}")
+                            except Exception as e_ss:
+                                logger.error(f"Failed to take screenshot {relogin_modal_fail_screenshot}: {e_ss}")
+                            return None
+                        else:
+                            logger.info(f"License modal appeared for '{item_title}' after re-login strategy.")
+                            # Modal is now available, proceed
+                    else:
+                        logger.error(f"Re-login attempt FAILED for '{item_title}'. Cannot proceed with download.")
+                        relogin_attempt_fail_screenshot = LOGS_DIR / f"relogin_attempt_failed_{sanitize_filename(item_title)}.png"
+                        try:
+                            await page.screenshot(path=str(relogin_attempt_fail_screenshot))
+                            logger.info(f"Screenshot taken: {relogin_attempt_fail_screenshot}")
+                        except Exception as e_ss:
+                            logger.error(f"Failed to take screenshot {relogin_attempt_fail_screenshot}: {e_ss}")
+                        return None
+                else:
+                    logger.error(f"Cannot attempt re-login for '{item_title}': Envato credentials not found. Initial modal screenshot: {initial_modal_fail_screenshot}")
+                    return None # Initial screenshot already taken
+            else:
+                logger.error(f"License modal for '{item_title}' did not appear, and 'Sign in' link was not found/visible. Cannot attempt re-login strategy. Initial modal screenshot: {initial_modal_fail_screenshot}")
+                return None # Initial screenshot already taken
+
+        # If modal_container_locator is None here, it means a failure path above was taken and returned None.
+        # If execution reaches here, modal_container_locator should be valid.
+
+        # 2. Handle the license pop-up modal (modal_container_locator is now assumed to be valid)
+        project_radio_selector = f'input[type="radio"][value="{project_license_value}"]'
+        # Define screenshot path for radio button specific errors
+        radio_button_error_screenshot_path = LOGS_DIR / f"error_modal_radio_timeout_{sanitize_filename(item_title)}.png"
+
         logger.info(f"Modal container found. Waiting for project license radio button: {project_radio_selector}")
         try:
-            # Try finding radio button within the modal first, then fall back to page-wide search if necessary
-            radio_button_locator_in_modal = modal_container_locator.locator(project_radio_selector)
-            if await radio_button_locator_in_modal.count() > 0:
-                 await radio_button_locator_in_modal.wait_for(state="visible", timeout=25000) # Increased timeout
-                 radio_button_to_check = radio_button_locator_in_modal
-            else:
-                 logger.info("Radio button not immediately found in modal container, trying page-wide search.")
-                 await page.wait_for_selector(project_radio_selector, timeout=25000, state="visible") # Increased timeout
-                 radio_button_to_check = page.locator(project_radio_selector)
+            # Try finding radio button within the modal first
+            radio_button_to_check = modal_container_locator.locator(project_radio_selector)
 
-            # Check if the selected locator is indeed visible before interacting
-            if not await radio_button_to_check.is_visible():
-                raise Exception(f"Radio button '{project_radio_selector}' found in DOM but not visible.")
+            # Explicitly wait for the radio button to be visible and enabled within the modal
+            await radio_button_to_check.wait_for(state="visible", timeout=25000) # Increased timeout
+            # Optionally, also wait for it to be enabled if that's an issue:
+            # await radio_button_to_check.wait_for(state="enabled", timeout=5000)
 
             logger.info(f"Selecting project radio button with value: '{project_license_value}'")
-            await radio_button_to_check.check()
-            assert await radio_button_to_check.is_checked(), f"Failed to check project radio button '{project_license_value}'"
+            await radio_button_to_check.check() # Use check() for radio buttons
+
+            # Verify it's checked
+            is_checked = await radio_button_to_check.is_checked()
+            if not is_checked:
+                 # Fallback: if .check() didn't work, try .click() - sometimes helps with custom radio buttons
+                 logger.warning(f"Radio button for '{project_license_value}' not checked after .check(), trying .click()")
+                 await radio_button_to_check.click()
+                 await page.wait_for_timeout(500) # Brief pause after click
+                 is_checked = await radio_button_to_check.is_checked()
+
+            assert is_checked, f"Failed to check project radio button '{project_license_value}'"
 
         except Exception as e_radio_timeout:
-            logger.error(f"Error with project radio button '{project_radio_selector}' within modal: {e_radio_timeout}")
-            logger.info(f"Attempting to save screenshot to: {screenshot_path}")
-            await page.screenshot(path=str(screenshot_path))
+            logger.error(f"Error with project radio button '{project_radio_selector}' within modal for '{item_title}': {e_radio_timeout}")
+            logger.info(f"Attempting to save screenshot to: {radio_button_error_screenshot_path}")
             try:
-                modal_html = await modal_container_locator.evaluate("(element) => element.outerHTML", timeout=5000)
-                logger.info(f"Modal content (after radio button failure):\n{modal_html}")
+                await page.screenshot(path=str(radio_button_error_screenshot_path))
+            except Exception as e_ss:
+                logger.error(f"Failed to take screenshot {radio_button_error_screenshot_path}: {e_ss}")
+            try:
+                # Log modal HTML for debugging radio button issues
+                modal_html = await modal_container_locator.evaluate("element => element.outerHTML", timeout=5000)
+                logger.info(f"Modal content (after radio button failure for '{item_title}'):\n{modal_html[:2000]}...") # Log first 2k chars
             except Exception as e_html:
-                logger.warning(f"Could not get modal HTML after radio button failure: {e_html}")
+                logger.warning(f"Could not get modal HTML after radio button failure for '{item_title}': {e_html}")
             return None
 
         # 3. Click the "License & download" button in the modal
