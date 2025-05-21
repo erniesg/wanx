@@ -27,6 +27,8 @@ logger.info(f"Global LOGS_DIR defined as: {LOGS_DIR.absolute()}")
 # Load environment variables from .env file
 load_dotenv()
 
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+
 def get_envato_credentials() -> Tuple[str | None, str | None]:
     """Loads Envato credentials from environment variables."""
     username = os.getenv("ENVATO_USERNAME")
@@ -34,6 +36,65 @@ def get_envato_credentials() -> Tuple[str | None, str | None]:
     if not username or not password:
         logger.warning("ENVATO_USERNAME or ENVATO_PASSWORD not found in .env file.")
     return username, password
+
+async def _handle_potential_modals_after_login(page: Page):
+    """Handles potential modals that appear shortly after login, like VideoGen or other pop-ups."""
+    logger.info("Checking for potential modals post-login (e.g., VideoGen)...")
+
+    # VideoGen Modal (based on screenshot)
+    videogen_modal_selector = "div[role='dialog']:has-text('VideoGen is here')"
+    # More specific text from screenshot: "VideoGen is here. Experience state-of-the-art video creation today."
+    videogen_modal_selector_detailed = "div[role='dialog']:has-text('VideoGen is here. Experience state-of-the-art video creation today.')"
+
+    close_button_selectors = [
+        "button[aria-label*='lose']", # Matches Close, close, etc.
+        "button:has(svg[href*='#close'])", # SVG with close in href
+        "button:has(svg[aria-label*='lose'])", # SVG with aria-label close
+        "button:has-text('×')", # Actual '×' character
+        "button:has-text('Got it')" # Sometimes modals have a "Got it" or "Dismiss"
+    ]
+
+    async def try_close_modal(modal_locator: Locator, modal_name: str):
+        try:
+            await modal_locator.wait_for(state="visible", timeout=7000) # Wait a bit for it to appear
+            logger.info(f"'{modal_name}' modal detected. Attempting to close it.")
+            closed = False
+            for i, cb_selector in enumerate(close_button_selectors):
+                try:
+                    close_button = modal_locator.locator(cb_selector).first # Take the first match
+                    await close_button.wait_for(state="visible", timeout=1000) # Quick check for button visibility
+                    await close_button.click()
+                    logger.info(f"Clicked close button ('{cb_selector}') for '{modal_name}' modal.")
+                    await page.wait_for_timeout(1500) # Wait for modal to disappear
+                    if not await modal_locator.is_visible(): # Check if modal is gone
+                        logger.info(f"'{modal_name}' modal successfully closed.")
+                        closed = True
+                        break
+                    else:
+                        logger.warning(f"'{modal_name}' modal still visible after attempting close with selector {i+1}.")
+                except Exception:
+                    logger.debug(f"Close button selector '{cb_selector}' not found or failed for '{modal_name}' modal.")
+            if not closed:
+                logger.warning(f"Could not close '{modal_name}' modal after trying all selectors. It might interfere.")
+                await modal_locator.screenshot(path=str(LOGS_DIR / f"modal_not_closed_{sanitize_filename(modal_name)}.png"))
+            return closed
+        except Exception:
+            logger.info(f"'{modal_name}' modal not found or did not appear within timeout.")
+            return False # Modal was not an issue
+
+    # Check for VideoGen modal using detailed text first, then generic
+    videogen_modal_loc_detailed = page.locator(videogen_modal_selector_detailed)
+    if await videogen_modal_loc_detailed.count() > 0 and await videogen_modal_loc_detailed.is_visible(timeout=1000): # Quick check if it's already there
+        await try_close_modal(videogen_modal_loc_detailed, "VideoGen Detailed")
+    else:
+        videogen_modal_loc_generic = page.locator(videogen_modal_selector)
+        await try_close_modal(videogen_modal_loc_generic, "VideoGen Generic")
+
+    # Add checks for other potential modals here if they become common
+    # Example: survey_modal_selector = "div[role='dialog']:has-text('Quick Survey')"
+    # await try_close_modal(page.locator(survey_modal_selector), "Survey Modal")
+
+    logger.info("Finished checking for post-login modals.")
 
 async def login_to_envato(page: Page, username: str, password: str) -> bool:
     """
@@ -65,24 +126,110 @@ async def login_to_envato(page: Page, username: str, password: str) -> bool:
         logger.info(f"Attempting to click submit button: {submit_button_selector}")
         await page.click(submit_button_selector)
 
-        # Wait for navigation to the homepage or a dashboard URL
-        # Example: Wait for the URL to change to the main elements page
-        await page.wait_for_url("https://elements.envato.com/**", timeout=30000) # Increased timeout
-        logger.info(f"Initial login navigation successful, current URL: {page.url}")
+        # Wait for basic page load to complete after submission
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+            logger.info(f"Login submitted, domcontentloaded. Current URL: {page.url}")
+        except Exception as e_load:
+            logger.warning(f"Error waiting for domcontentloaded post-login submit: {e_load}. Proceeding with checks.")
 
-        # Add explicit visit to homepage and a small delay to help session stabilization
-        logger.info("Explicitly navigating to Envato Elements homepage to help stabilize session...")
-        await page.goto("https://elements.envato.com/", wait_until="networkidle")
-        logger.info(f"Navigated to homepage, current URL: {page.url}. Waiting for 3 seconds...")
-        # await page.wait_for_timeout(3000) # Small delay
+        # Handle potential modals like VideoGen that might pop up immediately
+        await _handle_potential_modals_after_login(page)
 
-        logger.info("Login and session stabilization steps completed. Adding a final short delay before returning.")
-        # await page.wait_for_timeout(2000) # Additional short delay
-        return True
+        # --- Definitive Logged-in Check ---
+        login_confirmed = False
+
+        # 1. Primary Check: Navigation Drawer for "Sign out" text
+        logger.info("Attempting primary login confirmation: checking for 'Sign out' in navigation drawer.")
+        nav_drawer_toggle_selector = "button[data-testid='toggle-navigation-drawer']"
+        # Fallback if data-testid is not present or changes
+        nav_drawer_toggle_selector_alt = "button[aria-label='open navigation']"
+        nav_drawer_content_selector = "div[data-testid='navigation-drawer-content']"
+        sign_out_text_selector = "span:has-text('Sign out')" # Looking for a span containing this exact text
+
+        try:
+            nav_toggle_button = page.locator(nav_drawer_toggle_selector)
+            if not await nav_toggle_button.is_visible(timeout=5000):
+                logger.info(f"'{nav_drawer_toggle_selector}' not visible, trying alt: '{nav_drawer_toggle_selector_alt}'.")
+                nav_toggle_button = page.locator(nav_drawer_toggle_selector_alt)
+                await nav_toggle_button.wait_for(state="visible", timeout=5000)
+
+            logger.info("Navigation drawer toggle button found. Clicking to open.")
+            await nav_toggle_button.click()
+
+            nav_drawer_content = page.locator(nav_drawer_content_selector)
+            await nav_drawer_content.wait_for(state="visible", timeout=10000)
+            logger.info("Navigation drawer content is visible.")
+
+            sign_out_locator = nav_drawer_content.locator(sign_out_text_selector)
+            # Use a more robust check for the sign out text to be exactly "Sign out"
+            # This can be done by filtering locators or getting all text and checking.
+            # For simplicity and given Playwright's :has-text behavior, this should be fairly good.
+            # If it becomes an issue, we can iterate through spans and check exact text_content().
+
+            await sign_out_locator.first.wait_for(state="visible", timeout=5000) # Wait for the first match
+            logger.info("'Sign out' text found within navigation drawer. Login confirmed.")
+            login_confirmed = True
+
+            # Attempt to close the drawer
+            logger.info("Attempting to close navigation drawer.")
+            await nav_toggle_button.click() # Click toggle again
+            await page.wait_for_timeout(500) # Brief pause for drawer to close
+            if await nav_drawer_content.is_visible(): # Check if it actually closed
+                logger.warning("Navigation drawer did not close on first attempt, trying Escape key.")
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(500)
+                if await nav_drawer_content.is_visible():
+                    logger.error("Failed to close navigation drawer. This might interfere with subsequent actions.")
+
+        except Exception as e_drawer_check:
+            logger.warning(f"Primary login check (navigation drawer 'Sign out') failed: {type(e_drawer_check).__name__}: {e_drawer_check}")
+            # Ensure drawer is not stuck open if it was partially opened before error
+            try:
+                if page.locator(nav_drawer_content_selector).is_visible(): # No timeout, just a quick check
+                    logger.info("Drawer content was visible after primary check failure, attempting to close via Escape.")
+                    await page.keyboard.press("Escape")
+            except Exception as e_escape:
+                logger.warning(f"Exception while trying to press Escape after drawer check failure: {e_escape}")
+
+        # 2. Secondary Check: User Avatar Button (if primary check failed)
+        if not login_confirmed:
+            logger.info("Attempting secondary login confirmation: checking for user avatar button.")
+            user_avatar_button_selector = "button[data-testid='user-avatar-button']"
+            try:
+                await page.wait_for_selector(user_avatar_button_selector, state="visible", timeout=10000)
+                logger.info("User avatar button found. Login confirmed (secondary check).")
+                login_confirmed = True
+            except Exception as e_avatar_check:
+                logger.error(f"Secondary login check (user avatar) also failed: {e_avatar_check}")
+
+        if login_confirmed:
+            logger.info("Login confirmed. Navigating to Envato Elements homepage for stable state.")
+            try:
+                await page.goto("https://elements.envato.com/", wait_until="domcontentloaded", timeout=20000)
+                logger.info(f"Successfully navigated to homepage. Final URL: {page.url}")
+            except Exception as e_goto_home:
+                logger.warning(f"Failed to navigate to homepage after confirmed login: {e_goto_home}. Current URL: {page.url}")
+            return True
+        else:
+            logger.error("Login failed: Neither 'Sign out' in drawer nor user avatar button was found.")
+            screenshot_path = LOGS_DIR / f"envato_login_fail_final_checks_{uuid.uuid4().hex[:8]}.png"
+            try:
+                await page.screenshot(path=str(screenshot_path))
+                logger.info(f"Failure screenshot saved to {screenshot_path}")
+            except Exception as e_screenshot:
+                logger.error(f"Failed to save failure screenshot: {e_screenshot}")
+            return False
+
     except Exception as e:
-        logger.error(f"Error during Envato login: {e}")
+        logger.error(f"Generic error during Envato login process: {e}")
         # You might want to take a screenshot here for debugging
-        # await page.screenshot(path="envato_login_error.png")
+        screenshot_path = LOGS_DIR / f"envato_login_error_generic_{uuid.uuid4().hex[:8]}.png"
+        try:
+            await page.screenshot(path=str(screenshot_path))
+            logger.info(f"Generic error screenshot saved to {screenshot_path}")
+        except Exception as e_screenshot_generic:
+            logger.error(f"Failed to save generic error screenshot: {e_screenshot_generic}")
         return False
 
 async def _parse_envato_item_search_results_page(page: Page, keyword_identifier: str, item_type: str, num_results_to_save: int) -> List[Dict[str, Any]]:
@@ -247,7 +394,7 @@ async def search_envato_music_by_url(page: Page, params: EnvatoMusicSearchParams
     full_search_url = f"https://elements.envato.com{search_path}"
     logger.info(f"Navigating to Envato music search URL: {full_search_url}")
     try:
-        await page.goto(full_search_url, wait_until="networkidle", timeout=30000)
+        await page.goto(full_search_url, wait_until="domcontentloaded", timeout=30000)
         if "/audio/" not in page.url and "content-not-found" not in page.url:
             logger.warning(f"Page URL '{page.url}' may not be audio results. Proceeding.")
         if "content-not-found" in page.url:
@@ -266,7 +413,7 @@ async def search_envato_stock_video_by_url(page: Page, params: EnvatoStockVideoS
     full_search_url = f"https://elements.envato.com{search_path}"
     logger.info(f"Navigating to Envato stock video search URL: {full_search_url}")
     try:
-        await page.goto(full_search_url, wait_until="networkidle", timeout=30000)
+        await page.goto(full_search_url, wait_until="domcontentloaded", timeout=30000)
 
         # Explicitly wait for a main container of search results to be visible
         # This selector is a guess; may need adjustment based on actual page structure.
@@ -299,7 +446,7 @@ async def search_envato_photos_by_url(page: Page, params: EnvatoPhotoSearchParam
     full_search_url = f"https://elements.envato.com{search_path}"
     logger.info(f"Navigating to Envato photo search URL: {full_search_url}")
     try:
-        await page.goto(full_search_url, wait_until="networkidle", timeout=30000)
+        await page.goto(full_search_url, wait_until="domcontentloaded", timeout=30000)
         # Photo URLs look like /photos/keyword/filters...
         if "/photos/" not in page.url and "content-not-found" not in page.url:
             logger.warning(f"Page URL '{page.url}' may not be photo results. Proceeding cautiously.")
@@ -622,185 +769,212 @@ async def download_envato_asset(
     item_page_url: Optional[str] = None
 ) -> Optional[str]:
     """
-    Downloads a music asset from Envato Elements by clicking a download button on the search results page.
-    Args:
-        page: Playwright Page object.
-        item_title: The title of the item (for naming the downloaded file).
-        download_button_locator: The Playwright Locator for the item's download button on the results page.
-        project_license_value: The 'value' attribute of the project radio button to select.
-        download_directory: The directory to save the downloaded file.
-        item_page_url: Optional URL of the item page, for logging or fallback.
-
-    Returns:
-        The full path to the downloaded file if successful, otherwise None.
+    Downloads an asset from Envato Elements.
+    Handles potential intermediate upsell/login modals before reaching the license modal.
     """
     if not download_button_locator:
         logger.error(f"Download attempt for '{item_title}' failed: No download button locator provided.")
         return None
 
-    # Ensure LOGS_DIR exists
     if not LOGS_DIR.exists():
         try:
             LOGS_DIR.mkdir(parents=True, exist_ok=True)
             logger.info(f"download_envato_asset: Created logs directory at: {LOGS_DIR.absolute()}")
         except Exception as e_mkdir:
             logger.error(f"download_envato_asset: Failed to create logs directory at {LOGS_DIR.absolute()}: {e_mkdir}")
-            # Depending on policy, might want to return None or raise if logs are critical
 
     logger.info(f"Attempting to download asset: '{item_title}' using provided button locator.")
     Path(download_directory).mkdir(parents=True, exist_ok=True)
 
-    async def _check_and_get_modal_container(page_obj: Page, check_phase_description: str) -> Optional[Locator]:
-        """Helper to find and wait for the license modal."""
-        modal_container_locator_internal = None
-        # Prioritize more specific selectors if known, fallback to generic role/aria attributes
-        modal_selectors_to_try_internal = [
-            "div[data-testid='modal-dialog-license-content']", # Example of a potentially more specific selector
-            "div[role='dialog']",
-            "div[aria-modal='true']",
-            "section[aria-modal='true']"
+    async def _get_license_modal_locator(page_obj: Page, check_phase_description: str) -> Optional[Locator]:
+        """Helper to find the specific license modal (containing the download button)."""
+        license_modal_locator_internal = None
+        # Selectors specific to the license modal
+        # Looks for a dialog that HAS the 'add-download-button'
+        specific_license_modal_selectors = [
+            "div[role='dialog']:has(button[data-testid='add-download-button'])",
+            "section[aria-modal='true']:has(button[data-testid='add-download-button'])",
+            # Fallback if data-testid changes for the button, but structure is similar
+            "div[role='dialog']:has(button[type='submit'])"
         ]
-        logger.info(f"({check_phase_description}) Waiting for license modal container to appear...")
-        for modal_selector_str in modal_selectors_to_try_internal:
+        logger.info(f"({check_phase_description}) Waiting for SPECIFIC LICENSE modal container to appear...")
+        for modal_selector_str in specific_license_modal_selectors:
             try:
-                # Attempt to find a unique, visible modal. .first might be too greedy if multiple modals exist.
-                # However, for this context, it's usually one license modal.
                 current_modal_container = page_obj.locator(modal_selector_str).first
-                await current_modal_container.wait_for(state="visible", timeout=7000) # Original timeout
-                logger.info(f"({check_phase_description}) Modal container '{modal_selector_str}' found and visible.")
-                modal_container_locator_internal = current_modal_container
-                break # Found
+                await current_modal_container.wait_for(state="visible", timeout=7000)
+                logger.info(f"({check_phase_description}) Specific LICENSE modal container '{modal_selector_str}' found and visible.")
+                license_modal_locator_internal = current_modal_container
+                break
             except Exception:
-                logger.info(f"({check_phase_description}) Modal container '{modal_selector_str}' not found or not visible within 7s.")
+                logger.info(f"({check_phase_description}) Specific LICENSE modal container '{modal_selector_str}' not found or not visible within 7s.")
                 continue
-        return modal_container_locator_internal
+        return license_modal_locator_internal
+
+    license_modal_locator: Optional[Locator] = None
 
     try:
-        # 1. Click the item's download button (on search results page) to open the license modal
         logger.info(f"Clicking item's download button to open modal (Title: {item_title})...")
         await download_button_locator.click()
+        await page.wait_for_timeout(1500) # Short pause for modal to potentially start rendering
 
-        modal_container_locator = await _check_and_get_modal_container(page, f"{item_title} - initial check")
+        # Step 1: Check for and handle Upsell Modal first
+        upsell_modal_candidate_selector = "div[role='dialog']:has-text('Want this item?')" # More specific if possible
+        # Alternative upsell selectors if the above is too broad or changes:
+        # upsell_modal_candidate_selector_alt1 = "div[role='dialog']:has-text('Subscribe to download')"
 
-        if not modal_container_locator:
-            logger.warning(f"License modal container did not appear for '{item_title}' after initial download click. Attempting re-login strategy.")
-            initial_modal_fail_screenshot = LOGS_DIR / f"modal_fail_initial_{sanitize_filename(item_title)}.png"
+        upsell_modal_locator = page.locator(upsell_modal_candidate_selector).first
+        upsell_signin_link_locator = upsell_modal_locator.locator("a:text-matches('Sign in', 'i')")
+
+        upsell_modal_is_visible = False
+        try:
+            await upsell_modal_locator.wait_for(state="visible", timeout=5000) # Short timeout for upsell modal
+            upsell_modal_is_visible = True
+        except Exception:
+            logger.info(f"Upsell modal ('{upsell_modal_candidate_selector}') not immediately visible for '{item_title}'.")
+
+        if upsell_modal_is_visible:
+            logger.info(f"Upsell modal detected for '{item_title}'. Checking for its 'Sign in' link.")
             try:
-                await page.screenshot(path=str(initial_modal_fail_screenshot))
-                logger.info(f"Screenshot taken: {initial_modal_fail_screenshot}")
-            except Exception as e_ss:
-                logger.error(f"Failed to take screenshot {initial_modal_fail_screenshot}: {e_ss}")
-
-            signin_link_locator = page.locator('a.MwuuClIh.REJFlh_K[href="/sign-in"]:has-text("Sign in")')
-
-            signin_link_visible = False
-            try:
-                # Check visibility with a timeout, in case the page is still loading or the element isn't there.
-                await signin_link_locator.wait_for(state="visible", timeout=5000)
-                signin_link_visible = True
-            except Exception:
-                logger.info(f"'Sign in' link not visible or not found within 5s for '{item_title}'.")
-
-
-            if signin_link_visible:
-                logger.info(f"Found 'Sign in' link for '{item_title}'. Attempting to click and re-login.")
-                try:
-                    await signin_link_locator.click()
-                except Exception as e_click:
-                    logger.error(f"Failed to click 'Sign in' link for '{item_title}': {e_click}")
-                    # Screenshot already taken (initial_modal_fail_screenshot) might be relevant
-                    return None
+                await upsell_signin_link_locator.wait_for(state="visible", timeout=2000)
+                logger.info(f"Found 'Sign in' link on the upsell modal for '{item_title}'. Clicking it.")
+                await upsell_signin_link_locator.click()
 
                 username, password = get_envato_credentials()
                 if username and password:
                     login_success = await login_to_envato(page, username, password)
                     if login_success:
-                        logger.info(f"Re-login successful for '{item_title}'. Waiting briefly and checking for modal again.")
-                        await page.wait_for_timeout(3000) # Brief pause for UI to settle after login
-                        modal_container_locator = await _check_and_get_modal_container(page, f"{item_title} - after re-login")
-
-                        if not modal_container_locator:
-                            logger.error(f"License modal STILL did not appear for '{item_title}' after re-login.")
-                            relogin_modal_fail_screenshot = LOGS_DIR / f"modal_fail_after_relogin_{sanitize_filename(item_title)}.png"
-                            try:
-                                await page.screenshot(path=str(relogin_modal_fail_screenshot))
-                                logger.info(f"Screenshot taken: {relogin_modal_fail_screenshot}")
-                            except Exception as e_ss:
-                                logger.error(f"Failed to take screenshot {relogin_modal_fail_screenshot}: {e_ss}")
-                            return None
-                        else:
-                            logger.info(f"License modal appeared for '{item_title}' after re-login strategy.")
-                            # Modal is now available, proceed
-                    else:
-                        logger.error(f"Re-login attempt FAILED for '{item_title}'. Cannot proceed with download.")
-                        relogin_attempt_fail_screenshot = LOGS_DIR / f"relogin_attempt_failed_{sanitize_filename(item_title)}.png"
+                        logger.info(f"Re-login via upsell modal successful for '{item_title}'. Waiting for page stability and then looking for license modal.")
                         try:
-                            await page.screenshot(path=str(relogin_attempt_fail_screenshot))
-                            logger.info(f"Screenshot taken: {relogin_attempt_fail_screenshot}")
-                        except Exception as e_ss:
-                            logger.error(f"Failed to take screenshot {relogin_attempt_fail_screenshot}: {e_ss}")
-                        return None
-                else:
-                    logger.error(f"Cannot attempt re-login for '{item_title}': Envato credentials not found. Initial modal screenshot: {initial_modal_fail_screenshot}")
-                    return None # Initial screenshot already taken
+                            await page.wait_for_selector("button[data-testid='user-avatar-button']", state="visible", timeout=15000)
+                            logger.info("User avatar visible, page considered stable after upsell re-login.")
+                        except Exception as e_avatar:
+                            logger.warning(f"User avatar not found after upsell re-login, proceeding with caution: {e_avatar}")
+                        await page.wait_for_timeout(1000) # Brief additional pause
+                        license_modal_locator = await _get_license_modal_locator(page, f"{item_title} - after upsell re-login")
+
+                        if not license_modal_locator and item_page_url:
+                            logger.info(f"License modal not found after upsell re-login. Trying re-navigation to {item_page_url}")
+                            try:
+                                await page.goto(item_page_url, wait_until="domcontentloaded", timeout=20000)
+                                await page.wait_for_selector("button[data-testid='user-avatar-button']", state="visible", timeout=15000)
+                                logger.info(f"Re-navigated to {item_page_url} and user avatar visible.")
+                                await page.wait_for_timeout(1000) # Settle after nav
+                                license_modal_locator = await _get_license_modal_locator(page, f"{item_title} - after upsell re-login and re-nav")
+                            except Exception as e_re_nav_avatar:
+                                logger.error(f"Failed during re-navigation to {item_page_url} or finding avatar post-re-nav: {e_re_nav_avatar}")
+                                await page.screenshot(path=str(LOGS_DIR / f"re_nav_upsell_fail_{sanitize_filename(item_title)}.png"))
+
+                    else:
+                        logger.error(f"Re-login FAILED via upsell modal for '{item_title}'.")
+                        await page.screenshot(path=str(LOGS_DIR / f"relogin_fail_upsell_{sanitize_filename(item_title)}.png"))
+            except Exception as e_upsell_signin:
+                logger.warning(f"Could not find or click 'Sign in' link on detected upsell modal for '{item_title}', or other error: {e_upsell_signin}. Proceeding to check for license modal directly.")
+                await upsell_modal_locator.screenshot(path=str(LOGS_DIR / f"upsell_modal_no_signin_link_{sanitize_filename(item_title)}.png"))
+                # Fall through to check for license modal anyway
+
+        # Step 2: If license modal not found yet (either upsell wasn't there, or its flow didn't set it)
+        if not license_modal_locator:
+            license_modal_locator = await _get_license_modal_locator(page, f"{item_title} - primary check")
+
+        # Step 3: If still no license modal, try the general page re-login fallback
+        if not license_modal_locator:
+            logger.warning(f"License modal not found for '{item_title}' after initial checks (and potential upsell handling). Attempting general page re-login strategy.")
+            # This is the part from the original re-login strategy if no modal was found initially.
+            # (selector for general sign-in link, often on a header or if page redirects)
+            general_signin_link_selector = 'a.MwuuClIh.REJFlh_K[href="/sign-in"]:has-text("Sign in")'
+            general_signin_link = page.locator(general_signin_link_selector)
+
+            general_signin_visible = False
+            try:
+                await general_signin_link.wait_for(state="visible", timeout=3000)
+                general_signin_visible = True
+            except Exception:
+                logger.info(f"General page 'Sign in' link ('{general_signin_link_selector}') not visible for '{item_title}'.")
+
+            if general_signin_visible:
+                logger.info(f"Found general page 'Sign in' link for '{item_title}'. Clicking and re-logging in.")
+                try:
+                    await general_signin_link.click()
+                    username, password = get_envato_credentials()
+                    if username and password:
+                        login_success = await login_to_envato(page, username, password)
+                        if login_success:
+                            logger.info(f"General page re-login successful for '{item_title}'. Waiting for page stability and checking for license modal again.")
+                            try:
+                                await page.wait_for_selector("button[data-testid='user-avatar-button']", state="visible", timeout=15000)
+                                logger.info("User avatar visible, page considered stable after general re-login.")
+                            except Exception as e_avatar:
+                                logger.warning(f"User avatar not found after general re-login, proceeding with caution: {e_avatar}")
+                            await page.wait_for_timeout(1000) # Brief additional pause
+                            license_modal_locator = await _get_license_modal_locator(page, f"{item_title} - after general re-login")
+
+                            if not license_modal_locator and item_page_url:
+                                logger.info(f"License modal not found after general re-login. Trying re-navigation to {item_page_url}")
+                                try:
+                                    await page.goto(item_page_url, wait_until="domcontentloaded", timeout=20000)
+                                    await page.wait_for_selector("button[data-testid='user-avatar-button']", state="visible", timeout=15000)
+                                    logger.info(f"Re-navigated to {item_page_url} and user avatar visible.")
+                                    await page.wait_for_timeout(1000) # Settle after nav
+                                    license_modal_locator = await _get_license_modal_locator(page, f"{item_title} - after general re-login and re-nav")
+                                except Exception as e_re_nav_avatar:
+                                    logger.error(f"Failed during re-navigation to {item_page_url} or finding avatar post-re-nav: {e_re_nav_avatar}")
+                                    await page.screenshot(path=str(LOGS_DIR / f"re_nav_general_fail_{sanitize_filename(item_title)}.png"))
+                        else:
+                            logger.error(f"General page re-login FAILED for '{item_title}'.")
+                            await page.screenshot(path=str(LOGS_DIR / f"relogin_fail_general_{sanitize_filename(item_title)}.png"))
+                except Exception as e_general_signin:
+                    logger.error(f"Error clicking general page 'Sign in' link for '{item_title}': {e_general_signin}")
             else:
-                logger.error(f"License modal for '{item_title}' did not appear, and 'Sign in' link was not found/visible. Cannot attempt re-login strategy. Initial modal screenshot: {initial_modal_fail_screenshot}")
-                return None # Initial screenshot already taken
+                 logger.info(f"No general page sign-in link found for '{item_title}'. Cannot attempt this fallback.")
 
-        # If modal_container_locator is None here, it means a failure path above was taken and returned None.
-        # If execution reaches here, modal_container_locator should be valid.
 
-        # 2. Handle the license pop-up modal (modal_container_locator is now assumed to be valid)
+        # Final Check: If license_modal_locator is still None, then we failed.
+        if not license_modal_locator:
+            logger.error(f"LICENSE MODAL DEFINITIVELY NOT FOUND for '{item_title}' after all strategies.")
+            final_fail_screenshot = LOGS_DIR / f"modal_fail_final_{sanitize_filename(item_title)}.png"
+            try:
+                await page.screenshot(path=str(final_fail_screenshot))
+                logger.info(f"Final failure screenshot: {final_fail_screenshot}")
+            except Exception as e_ss:
+                logger.error(f"Failed to take final failure screenshot: {e_ss}")
+            return None
+
+        # --- Proceed with license modal (radio buttons, download) ---
+        logger.info(f"Proceeding with identified license modal for '{item_title}'.")
         project_radio_selector = f'input[type="radio"][value="{project_license_value}"]'
-        # Define screenshot path for radio button specific errors
         radio_button_error_screenshot_path = LOGS_DIR / f"error_modal_radio_timeout_{sanitize_filename(item_title)}.png"
 
-        logger.info(f"Modal container found. Waiting for project license radio button: {project_radio_selector}")
         try:
-            # Try finding radio button within the modal first
-            radio_button_to_check = modal_container_locator.locator(project_radio_selector)
-
-            # Explicitly wait for the radio button to be visible and enabled within the modal
-            await radio_button_to_check.wait_for(state="visible", timeout=25000) # Increased timeout
-            # Optionally, also wait for it to be enabled if that's an issue:
-            # await radio_button_to_check.wait_for(state="enabled", timeout=5000)
+            radio_button_to_check = license_modal_locator.locator(project_radio_selector)
+            await radio_button_to_check.wait_for(state="visible", timeout=25000)
 
             logger.info(f"Selecting project radio button with value: '{project_license_value}'")
-            await radio_button_to_check.check() # Use check() for radio buttons
+            await radio_button_to_check.check()
 
-            # Verify it's checked
             is_checked = await radio_button_to_check.is_checked()
             if not is_checked:
-                 # Fallback: if .check() didn't work, try .click() - sometimes helps with custom radio buttons
                  logger.warning(f"Radio button for '{project_license_value}' not checked after .check(), trying .click()")
                  await radio_button_to_check.click()
-                 await page.wait_for_timeout(500) # Brief pause after click
+                 await page.wait_for_timeout(500)
                  is_checked = await radio_button_to_check.is_checked()
-
             assert is_checked, f"Failed to check project radio button '{project_license_value}'"
 
         except Exception as e_radio_timeout:
-            logger.error(f"Error with project radio button '{project_radio_selector}' within modal for '{item_title}': {e_radio_timeout}")
-            logger.info(f"Attempting to save screenshot to: {radio_button_error_screenshot_path}")
+            logger.error(f"Error with project radio button '{project_radio_selector}' within license modal for '{item_title}': {e_radio_timeout}")
             try:
                 await page.screenshot(path=str(radio_button_error_screenshot_path))
-            except Exception as e_ss:
-                logger.error(f"Failed to take screenshot {radio_button_error_screenshot_path}: {e_ss}")
-            try:
-                # Log modal HTML for debugging radio button issues
-                modal_html = await modal_container_locator.evaluate("element => element.outerHTML", timeout=5000)
-                logger.info(f"Modal content (after radio button failure for '{item_title}'):\n{modal_html[:2000]}...") # Log first 2k chars
-            except Exception as e_html:
-                logger.warning(f"Could not get modal HTML after radio button failure for '{item_title}': {e_html}")
+                modal_html = await license_modal_locator.inner_html(timeout=2000) # Get innerHTML of the specific modal
+                logger.info(f"License Modal content (after radio button failure for '{item_title}'):\\n{modal_html[:1000]}...")
+            except Exception as e_diag:
+                logger.warning(f"Could not get diagnostic info (screenshot/HTML) after radio button failure for '{item_title}': {e_diag}")
             return None
 
-        # 3. Click the "License & download" button in the modal
+        # ... rest of the download logic (click "License & download", save file) ...
         license_and_download_button_selector = 'button[data-testid="add-download-button"]'
-        logger.info(f"Clicking '{license_and_download_button_selector}' button...")
+        logger.info(f"Clicking '{license_and_download_button_selector}' button in license modal...")
 
-        # Start waiting for the download event BEFORE clicking the button that triggers it
-        async with page.expect_download(timeout=60000) as download_info: # Increased timeout for download start
-            await page.locator(license_and_download_button_selector).click()
+        async with page.expect_download(timeout=60000) as download_info:
+            await license_modal_locator.locator(license_and_download_button_selector).click()
 
         download = await download_info.value
         logger.info(f"Download started: {download.suggested_filename}")
@@ -915,7 +1089,7 @@ if __name__ == '__main__':
 
         # async with async_playwright() as p:
         #     browser = await p.chromium.launch(headless=False) # Run in headful mode for debugging
-        #     page = await browser.new_page()
+        #     page = await browser.new_page(user_agent=DEFAULT_USER_AGENT)
 
         #     logger.info("Attempting login for search test...")
         #     login_ok = await login_to_envato(page, env_username, env_password)

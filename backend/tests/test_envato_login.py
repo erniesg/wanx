@@ -15,7 +15,8 @@ from backend.text_to_video.envato_client import (
     search_envato_stock_video_by_url,
     search_envato_photos_by_url,
     search_envato_stock_video_by_ui,
-    search_envato_photos_by_ui
+    search_envato_photos_by_ui,
+    DEFAULT_USER_AGENT
 )
 from backend.text_to_video.models.envato_models import (
     EnvatoMusicSearchParams, EnvatoMusicGenre, EnvatoMusicMood, EnvatoMusicTempo, EnvatoMusicTheme,
@@ -35,7 +36,7 @@ async def test_envato_login_success():
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
+            page = await browser.new_page(user_agent=DEFAULT_USER_AGENT)
 
             success = await login_to_envato(page, username, password)
 
@@ -58,7 +59,7 @@ async def test_envato_music_search_by_url():
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=False)
-            page = await browser.new_page()
+            page = await browser.new_page(user_agent=DEFAULT_USER_AGENT)
 
             login_success = await login_to_envato(page, username, password)
             assert login_success, "Login failed, cannot proceed with URL music search test."
@@ -132,7 +133,7 @@ async def test_envato_music_download(tmp_path: Path):
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=False)
-            page = await browser.new_page()
+            page = await browser.new_page(user_agent=DEFAULT_USER_AGENT)
 
             login_success = await login_to_envato(page, username, password)
             assert login_success, "Login failed for download test."
@@ -191,7 +192,7 @@ async def test_envato_stock_video_download(tmp_path: Path):
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=False)
-            page = await browser.new_page()
+            page = await browser.new_page(user_agent=DEFAULT_USER_AGENT)
 
             await login_to_envato(page, username, password)
             search_params = EnvatoStockVideoSearchParams(
@@ -274,7 +275,7 @@ async def test_envato_photo_download(tmp_path: Path):
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=False)
-            page = await browser.new_page()
+            page = await browser.new_page(user_agent=DEFAULT_USER_AGENT)
 
             await login_to_envato(page, username, password)
 
@@ -354,7 +355,7 @@ async def test_envato_stock_video_download_by_ui(tmp_path: Path):
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=False) # Start headless, change to False for debugging UI
-            page = await browser.new_page()
+            page = await browser.new_page(user_agent=DEFAULT_USER_AGENT)
             await login_to_envato(page, username, password)
 
             search_params = EnvatoStockVideoSearchParams(
@@ -425,7 +426,7 @@ async def test_envato_photo_download_by_ui(tmp_path: Path):
     async with async_playwright() as p:
         try:
             browser = await p.chromium.launch(headless=False) # Start headless, change to False for debugging UI
-            page = await browser.new_page()
+            page = await browser.new_page(user_agent=DEFAULT_USER_AGENT)
             await login_to_envato(page, username, password)
 
             search_params = EnvatoPhotoSearchParams(
