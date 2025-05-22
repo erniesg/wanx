@@ -59,32 +59,43 @@ def create_captioned_video(
     audio_clip = AudioFileClip(audio_path)
     original_audio_duration = audio_clip.duration
 
+    # Determine FPS from the video clip. Use a default if FPS is None or 0.
+    fps = video_clip.fps if video_clip.fps and video_clip.fps > 0 else 30.0
+    if print_info and (video_clip.fps is None or video_clip.fps <= 0):
+        print(f"Warning: Video FPS was {video_clip.fps}, using default {fps} fps.")
+
+    # Calculate target total frames based on original audio duration and video FPS
+    target_total_frames = round(original_audio_duration * fps)
+    precise_target_duration = target_total_frames / fps
+
     if print_info:
         print(f"Original video duration: {video_clip.duration}s, Original audio duration: {original_audio_duration}s")
+        print(f"Video FPS: {fps}")
+        print(f"Target total frames (based on audio): {target_total_frames}")
+        print(f"Precise target duration (for video and audio): {precise_target_duration}s")
 
     # If video has its own audio, remove it
     video_clip = video_clip.without_audio()
 
-    # Set video duration to audio duration
-    video_clip = video_clip.set_duration(original_audio_duration)
+    # Set video and audio durations precisely based on frame count
+    video_clip = video_clip.set_duration(precise_target_duration)
+    audio_clip = audio_clip.set_duration(precise_target_duration)
 
     # Combine new audio
     final_clip_with_audio = video_clip.set_audio(audio_clip)
-    # Ensure the combined clip also respects the audio duration strictly
-    final_clip_with_audio = final_clip_with_audio.set_duration(original_audio_duration)
+    final_clip_with_audio = final_clip_with_audio.set_duration(precise_target_duration)
 
     # Write this intermediate clip to a temporary file
     temp_video_audio_path = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
     if print_info:
         print(f"Writing intermediate video with new audio to: {temp_video_audio_path}")
-        print(f"  Expected duration for temp_video_audio_path: {original_audio_duration}s, FPS: {final_clip_with_audio.fps}")
-    final_clip_with_audio.write_videofile(temp_video_audio_path, codec="libx264", audio_codec="aac", logger="bar" if print_info else None)
+        print(f"  Expected duration for temp_video_audio_path: {precise_target_duration}s, Expected frames: {target_total_frames}, FPS: {final_clip_with_audio.fps}") # FPS might be slightly different after processing
+    final_clip_with_audio.write_videofile(temp_video_audio_path, codec="libx264", audio_codec="aac", logger="bar" if print_info else None, fps=fps) # Enforce FPS on write
 
     # 2. Scale down for TikTok dimensions, then center crop
     # Load the combined clip
     clip_to_resize = VideoFileClip(temp_video_audio_path)
-    # Explicitly set duration again after loading, just to be safe
-    clip_to_resize = clip_to_resize.set_duration(original_audio_duration)
+    clip_to_resize = clip_to_resize.set_duration(precise_target_duration)
 
     # Calculate new width and height maintaining aspect ratio to fit within TikTok dimensions
     original_width, original_height = clip_to_resize.size
@@ -110,14 +121,13 @@ def create_captioned_video(
     y_center = resized_clip.h / 2
 
     cropped_clip = crop(resized_clip, x_center=x_center, y_center=y_center, width=tiktok_width, height=tiktok_height)
-    # Ensure cropped clip also respects the audio duration
-    cropped_clip = cropped_clip.set_duration(original_audio_duration)
+    cropped_clip = cropped_clip.set_duration(precise_target_duration)
 
     if print_info:
         print(f"Resized to: ({resized_clip.w}, {resized_clip.h}), Cropped to: ({cropped_clip.w}, {cropped_clip.h})")
-        print(f"  Duration of cropped_clip before writing to processed_video_path: {cropped_clip.duration}s, FPS: {cropped_clip.fps}")
+        print(f"  Duration of cropped_clip before writing to processed_video_path: {cropped_clip.duration}s, Expected frames: {target_total_frames}, FPS: {cropped_clip.fps}")
 
-    cropped_clip.write_videofile(processed_video_path, codec="libx264", audio_codec="aac", logger="bar" if print_info else None)
+    cropped_clip.write_videofile(processed_video_path, codec="libx264", audio_codec="aac", logger="bar" if print_info else None, fps=fps) # Enforce FPS on write
 
     # Close clips to free up resources
     video_clip.close()
