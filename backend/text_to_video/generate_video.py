@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--script_file", type=str, default=None, help="Optional: Path to a .txt file containing the target script.")
     parser.add_argument("--highlight_current_word", action='store_true', help="Enable highlighting of the current word in captions.")
     parser.add_argument("--word_highlight_color", type=str, default="red", help="Color for highlighting the current word.")
+    parser.add_argument("--caption_width_percent", type=float, default=90.0, help="Maximum width of caption lines as a percentage of video width (e.g., 85.0 for 85%%).")
 
     args = parser.parse_args()
 
@@ -173,7 +174,8 @@ def main():
         stroke_color=args.stroke_color,
         padding_from_edge=args.padding_from_edge,
         highlight_current_word=args.highlight_current_word,
-        highlight_color=args.word_highlight_color
+        highlight_color=args.word_highlight_color,
+        video_width_percent_for_text=args.caption_width_percent
     )
     logger.info(f"Using caption style: {caption_style}")
 
@@ -291,12 +293,21 @@ def main():
         final_audio_track = AudioFileClip(input_audio_for_transcription)
         logger.info(f"Loaded final audio track from {input_audio_for_transcription} with natural duration: {final_audio_track.duration:.2f}s")
 
-        # Add a very short fade-out to prevent click/artifact at the end
-        # Ensure fade out duration is not longer than clip itself
         fade_duration = min(0.1, final_audio_track.duration)
         if fade_duration > 0:
             final_audio_track = final_audio_track.audio_fadeout(fade_duration)
             logger.info(f"Applied {fade_duration:.2f}s audio fade-out to final track.")
+
+        # If --audio_path was used, total_duration is based on this audio.
+        # Make audio slightly shorter than video to prevent end artifacts, especially if durations are identical.
+        # This cut is after the fade-out.
+        if args.audio_path and final_audio_track.duration >= total_duration: # total_duration is already set based on this audio
+            trim_amount = 0.05 # seconds
+            if final_audio_track.duration - trim_amount > 0:
+                final_audio_track = final_audio_track.subclip(0, final_audio_track.duration - trim_amount)
+                logger.info(f"Slightly trimmed audio by {trim_amount}s to prevent end artifact. New audio duration: {final_audio_track.duration:.2f}s")
+            else:
+                logger.warning(f"Could not trim audio as it would result in zero or negative duration.")
 
     except Exception as e:
         logger.error(f"Failed to prepare final audio track from {input_audio_for_transcription}: {e}")
