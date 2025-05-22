@@ -3,7 +3,7 @@ import logging
 import re
 from dotenv import load_dotenv
 from elevenlabs.client import ElevenLabs
-from elevenlabs import play
+from elevenlabs import play, Voice, VoiceSettings
 
 # Load environment variables
 load_dotenv()
@@ -52,12 +52,22 @@ def text_to_speech(text, output_filename="output.mp3"):
     client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
 
     try:
+        # Define custom voice settings
+        custom_voice_settings = VoiceSettings(
+            stability=0.50,
+            similarity_boost=0.75,
+            style=0.0,  # 0% style
+            use_speaker_boost=True,
+            speed=1.15
+        )
+
         # Convert text to speech
         audio_generator = client.text_to_speech.convert(
             text=text,
-            voice_id="oQZyHVc6FnIvc9bYS5yl",
+            voice_id="SDNKIYEpTz0h56jQX8rA",
             model_id="eleven_multilingual_v2",
             output_format="mp3_44100_128",
+            voice_settings=custom_voice_settings
         )
 
         # Collect audio data from the generator
@@ -84,7 +94,7 @@ def text_to_speech(text, output_filename="output.mp3"):
 
 # Example usage
 if __name__ == "__main__":
-    success = text_to_speech("Umm Al Qura's IPO sees massive demand—$126 billion in orders, 241 times oversubscribed! Shares priced at 15 riyals, valuing the company at $5.75 billion. The project aims")
+    success = text_to_speech("Umm Al Qura's IPO sees massive demand—$126 billion in orders, 241 times oversubscribed!")
     if success:
         logger.info(f"Audio saved successfully to {success}")
     else:
