@@ -199,6 +199,11 @@ def add_captions(
 
     # Open the video file
     video = VideoFileClip(video_file)
+
+    # Synchronize audio duration with video duration if audio exists
+    if video.audio is not None:
+        video.audio = video.audio.set_duration(video.duration)
+
     text_bbox_width = video.w-padding*2
     clips = [video]
 

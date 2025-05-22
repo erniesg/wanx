@@ -206,9 +206,9 @@ if __name__ == '__main__':
             output_directory=output_dir,
             output_filename="tiktok_test_output.mp4",
             print_info=True,
-            font_size=60, # Smaller font for testing
+            font_size=80, # Smaller font for testing
             line_count=1, # Changed from 3 to 1
-            padding=20,
+            padding=50,
             position="bottom-center"
         )
         print(f"Example finished. Check {output_dir}")
