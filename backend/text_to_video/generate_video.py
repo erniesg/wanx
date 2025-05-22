@@ -288,12 +288,16 @@ def main():
     # --- 5. Prepare Final Audio ---
     final_audio_track = None
     try:
-        # Load the audio clip that will be used for the final video.
-        # Its duration will be its natural duration.
-        # If the total_duration of the video is longer, there will be silence.
-        # If the total_duration is shorter, the audio will be truncated by the final composite.
         final_audio_track = AudioFileClip(input_audio_for_transcription)
         logger.info(f"Loaded final audio track from {input_audio_for_transcription} with natural duration: {final_audio_track.duration:.2f}s")
+
+        # Add a very short fade-out to prevent click/artifact at the end
+        # Ensure fade out duration is not longer than clip itself
+        fade_duration = min(0.1, final_audio_track.duration)
+        if fade_duration > 0:
+            final_audio_track = final_audio_track.audio_fadeout(fade_duration)
+            logger.info(f"Applied {fade_duration:.2f}s audio fade-out to final track.")
+
     except Exception as e:
         logger.error(f"Failed to prepare final audio track from {input_audio_for_transcription}: {e}")
 

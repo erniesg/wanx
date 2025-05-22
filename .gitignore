@@ -53,3 +53,5 @@ backend/assets/videos/
 backend/assets/output/*
 backend/assets/argil_workflow/*
 *.pt
+*.mov
+*.mp4
