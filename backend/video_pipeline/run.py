@@ -8,6 +8,7 @@ import shutil
 import re
 import datetime
 import sys
+import time
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
@@ -219,9 +220,17 @@ def generate_scene_plan(script_data_path: pathlib.Path, transcript_path: pathlib
 
 def main():
     parser = argparse.ArgumentParser(description="Run the full video generation pipeline.")
-    parser.add_argument("input_source", type=str, help="Path to a Markdown file or raw story text.")
+    parser.add_argument("input_source", type=str, help="Path to a Markdown file or raw story text. Used for output naming even if re-running.")
     parser.add_argument("--output_dir", type=str, help="Optional: Directory to save outputs. Defaults to a timestamped dir in ./video_outputs.")
+    parser.add_argument("--rerun_from_orchestration_summary", type=str, help="Optional: Path to an existing orchestration_summary.json to restart from the assembly step.")
+    parser.add_argument("--rerun_transcription_path", type=str, help="Required if --rerun_from_orchestration_summary is used. Path to the corresponding transcription.json.")
+    parser.add_argument("--rerun_script_path", type=str, help="Optional if --rerun_from_orchestration_summary is used, but needed by some earlier steps if not skipping them all. Path to the corresponding 01_generated_video_script.json.") # Added for completeness, though assembly might not need it directly.
+    parser.add_argument("--rerun_audio_path", type=str, help="Optional if --rerun_from_orchestration_summary is used. Path to the master audio file. Orchestration summary should contain this, but can be overridden.")
+
     args = parser.parse_args()
+
+    if args.rerun_from_orchestration_summary and not args.rerun_transcription_path:
+        parser.error("--rerun_transcription_path is required when using --rerun_from_orchestration_summary")
 
     config = load_pipeline_config()
 
@@ -269,29 +278,69 @@ def main():
     claude_model = llm_planner_config.get("MODEL_NAME", "claude-3-5-sonnet-20240620")
     claude_client = ClaudeClient(model=claude_model)
 
+    # Initialize paths for pipeline products
+    script_path = None
+    audio_path = None
+    transcript_path = None
+    scene_plan_path = None
+    orchestration_summary_path = None
+
     try:
-        # --- Run Pipeline Steps ---
-        script_path = generate_video_script(story_content, claude_client, config, output_dir)
+        if args.rerun_from_orchestration_summary:
+            logger.info(f"--- RE-RUNNING FROM EXISTING ORCHESTRATION SUMMARY --- ")
+            orchestration_summary_path = pathlib.Path(args.rerun_from_orchestration_summary)
+            transcript_path = pathlib.Path(args.rerun_transcription_path)
 
-        with open(script_path, 'r') as f:
-            script_data_for_tts = json.load(f)
-        audio_path = generate_tts_audio(script_data_for_tts, config, output_dir)
+            if not orchestration_summary_path.exists():
+                logger.error(f"Provided orchestration summary not found: {orchestration_summary_path}")
+                sys.exit(1)
+            if not transcript_path.exists():
+                logger.error(f"Provided transcription path not found: {transcript_path}")
+                sys.exit(1)
 
-        transcript_path = generate_transcription(audio_path, output_dir)
+            # If script_path and audio_path are needed by later stages (e.g. if we didn't skip orchestration)
+            # For now, assembly only needs orchestration summary and transcript directly.
+            # However, the orchestration summary itself should contain the master_vo_path.
+            logger.info(f"Using Orchestration Summary: {orchestration_summary_path}")
+            logger.info(f"Using Transcription: {transcript_path}")
+            # Skip steps 1-5
+            logger.info("Skipping Script Generation, TTS, Transcription Generation, Scene Planning, and Asset Orchestration.")
 
-        scene_plan_path = generate_scene_plan(script_path, transcript_path, claude_client, config, output_dir)
+        else:
+            logger.info("--- Starting Full Pipeline Execution --- ")
+            # --- Run Pipeline Steps --- (Original order)
+            script_path = generate_video_script(story_content, claude_client, config, output_dir)
 
-        logger.info(f"--- Step 5: Asset Orchestration ---")
-        orchestration_summary_path = run_asset_orchestration(
-            scene_plan_path_str=str(scene_plan_path),
-            master_vo_path_str=str(audio_path),
-            original_script_path_str=str(script_path), # The JSON script from step 1
-            output_dir=output_dir,
-            # pipeline_config=config # Pass full config if orchestrator needs more than env vars
-        )
-        logger.info(f"Asset orchestration summary saved to: {orchestration_summary_path}")
+            with open(script_path, 'r') as f:
+                script_data_for_tts = json.load(f)
+            audio_path = generate_tts_audio(script_data_for_tts, config, output_dir)
+
+            transcript_path = generate_transcription(audio_path, output_dir)
+
+            scene_plan_path = generate_scene_plan(script_path, transcript_path, claude_client, config, output_dir)
+
+            logger.info(f"--- Step 5: Asset Orchestration ---")
+            # If rerun_audio_path is provided, it could potentially be used here for orchestration if that step wasn't skipped.
+            # For now, if we are in this else block, audio_path is from generate_tts_audio.
+            # Similarly for script_path.
+            orchestration_summary_path = run_asset_orchestration(
+                scene_plan_path_str=str(scene_plan_path),
+                master_vo_path_str=str(audio_path), # audio_path from TTS step
+                original_script_path_str=str(script_path), # script_path from script gen step
+                output_dir=output_dir,
+            )
+            logger.info(f"Asset orchestration summary saved to: {orchestration_summary_path}")
+
+        # --- Step 6: Video Assembly --- (Common to both full run and re-run)
+        # orchestration_summary_path and transcript_path will be set either by full run or re-run args
+        if not orchestration_summary_path or not transcript_path:
+            logger.error("Critical path information for assembly (orchestration summary or transcript) is missing.")
+            sys.exit(1)
 
         logger.info(f"--- Step 6: Video Assembly ---")
+        logger.info(f"Using orchestration summary for assembly: {orchestration_summary_path}")
+        logger.info(f"Using transcription for assembly: {transcript_path}")
+
         video_general_config = config.get("video_general", {})
         target_fps = video_general_config.get("TARGET_FPS", 30)
         target_dims = tuple(video_general_config.get("TARGET_DIMENSIONS", [1080, 1920]))
@@ -319,4 +368,10 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    start_time = time.time()
+    try:
+        main()
+    finally:
+        end_time = time.time()
+        total_time = end_time - start_time
+        logger.info(f"--- Total Pipeline Execution Time: {total_time:.2f} seconds ---")

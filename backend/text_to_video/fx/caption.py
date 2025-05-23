@@ -27,14 +27,14 @@ def create_captioned_video(
     output_directory: str,
     output_filename: str = "captioned_video.mp4",
     font: str = "Bangers-Regular.ttf",
-    font_size: int = 70, # Adjusted for vertical format
+    font_size: int = 80, # Adjusted for vertical format
     font_color: str = "yellow",
     stroke_width: int = 2, # Adjusted for vertical format
     stroke_color: str = "black",
     highlight_current_word: bool = True,
     word_highlight_color: str = "red",
-    line_count: int = 3, # Adjusted for more vertical space
-    padding: int = 30, # Adjusted for vertical format
+    line_count: int = 1, # Adjusted for more vertical space
+    padding: int = 50, # Adjusted for vertical format
     position: tuple = "bottom-center",
     shadow_strength: float = 0.5, # Adjusted for subtlety
     shadow_blur: float = 0.05, # Adjusted for subtlety

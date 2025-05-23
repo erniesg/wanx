@@ -5,6 +5,7 @@ import pathlib
 import uuid
 import random
 import time
+import shutil
 from dotenv import load_dotenv
 import requests
 

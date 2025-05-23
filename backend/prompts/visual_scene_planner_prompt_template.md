@@ -40,9 +40,15 @@ Task:
      - Informed by the `original_script_part_ref`'s b_roll_keywords and overall video context.
      - Actionable for stock media search.
    - `fx_suggestion` (Optional): If the scene's text contains a very short, impactful phrase, a number, or a name that could be emphasized with a text overlay, suggest an `fx_suggestion`.
-     - `type`: e.g., "TEXT_OVERLAY_FADE"
-     - `text_content`: The specific text for the overlay.
-     - `params`: Basic styling like font size/color if applicable (keep simple).
+     - `type`: Choose from "TEXT_OVERLAY_FADE" or "TEXT_OVERLAY_SCALE".
+       - "TEXT_OVERLAY_FADE": Text fades in, holds, and fades out.
+       - "TEXT_OVERLAY_SCALE": Text scales (e.g., zooms in) over its duration.
+     - `text_content`: The specific text for the overlay (e.g., a keyword from the scene, a number, a name).
+     - `params`: (Optional) Specify text position.
+       - `position`: Can be a string like "center", "top", "top_left", "top_right", "center_left", "center_right".
+         - "top" positions will automatically include a standard padding from the screen edge.
+         - **IMPORTANT**: Do NOT use "bottom", "bottom_left", "bottom_right", or "bottom_center" for `position`, as this area is reserved for captions.
+       - Other parameters like font or color will use sensible defaults (e.g., "PoetsenOne-Regular" font, size 100, white text with black outline for good visibility, transparent background). You generally do not need to specify these.
 
 Output Format:
 Return a JSON list of scene plan objects. Each object must conform to this schema:
@@ -57,7 +63,7 @@ Return a JSON list of scene plan objects. Each object must conform to this schem
   "fx_suggestion": {{ // Optional, null if not applicable
     "type": "string",
     "text_content": "string",
-    "params": {{}} // e.g., {{"font_props": {{"color": "yellow"}}, "position": "center"}}
+    "params": {{}} // e.g., {{"position": "top_right"}} or {{"position": "center"}}
   }}
 }}
 

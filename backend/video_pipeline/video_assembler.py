@@ -23,7 +23,7 @@ from backend.video_pipeline.video_utils import (
     # TIKTOK_DIMS, # Removed, will load from config
     # DEFAULT_FPS # Removed, will load from config
 )
-from backend.text_to_video.fx.text_animations import animate_text_fade # For FX
+from backend.text_to_video.fx.text_animations import animate_text_fade, animate_text_scale # Added animate_text_scale
 from backend.text_to_video.fx import add_captions as add_captions_fx # For captions step
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -474,6 +474,73 @@ def apply_fx_to_video(input_video_path: str, output_dir_path: pathlib.Path, outp
                             logger.warning(f"    Failed to generate {fx_type} for scene {scene_id}")
                     except Exception as e_fx:
                         logger.error(f"    Error applying FX {fx_type} for scene {scene_id}: {e_fx}", exc_info=True)
+                elif fx_type == "TEXT_OVERLAY_SCALE":
+                    logger.info(f"  Preparing FX: {fx_type} for scene {scene_id}")
+                    try:
+                        text_content = fx_suggestion.get("text_content", "Scale FX")
+                        params = fx_suggestion.get("params", {})
+                        font_props_from_json = params.get("font_props", {})
+                        size_keyword = font_props_from_json.get("size", "default").lower()
+                        fontsize = FX_TEXT_SIZE_MAPPING.get(size_keyword, FX_TEXT_SIZE_MAPPING["default"])
+                        font_name = font_props_from_json.get("font", "Arial-Bold")
+                        pos_keyword = params.get("position", "center").lower()
+
+                        position_map = {
+                            "center": ("center", "center"), "top": ("center", "top"), "bottom": ("center", "bottom"),
+                            "top-left": ("left", "top"), "top-right": ("right", "top"),
+                            "bottom-left": ("left", "bottom"), "bottom-right": ("right", "bottom"),
+                        }
+                        text_position = position_map.get(pos_keyword, ("center", "center"))
+                        if isinstance(params.get("position"), tuple) and len(params.get("position")) == 2:
+                            text_position = params.get("position")
+
+                        # Specific params for scale, with defaults if not in JSON
+                        start_scale = float(params.get("start_scale", 1.0))
+                        end_scale = float(params.get("end_scale", 2.0))
+                        apply_fade_for_scale = bool(params.get("apply_fade", True))
+                        fade_proportion_for_scale = float(params.get("fade_proportion", 0.2))
+
+                        # assemble_final_video passes target_dims, which text_animations.py expects as screen_size
+                        # animate_text_scale will use its own default font_props unless overridden
+                        # We can pass a minimal font_props here if we only want to influence a part of it, or rely on its defaults.
+                        # For now, let text_animations.py handle its defaults for font, size, color, stroke.
+                        # If specific overrides are needed from params, they can be added to fx_font_props.
+                        fx_font_props = {}
+                        if "color" in font_props_from_json: fx_font_props['color'] = font_props_from_json["color"]
+                        # if "fontsize" in font_props_from_json: fx_font_props['fontsize'] = font_props_from_json["fontsize"] # etc.
+
+                        scene_start_time = scene.get("start_time")
+                        scene_end_time = scene.get("end_time")
+
+                        if scene_start_time is None or scene_end_time is None:
+                            logger.warning(f"    Scene {scene_id} missing start/end times for FX. Skipping FX.")
+                            continue
+                        fx_clip_actual_duration = scene_end_time - scene_start_time
+                        if fx_clip_actual_duration <= 0:
+                            logger.warning(f"    Scene {scene_id} has zero or negative duration for FX ({fx_clip_actual_duration:.2f}s). Skipping FX.")
+                            continue
+
+                        fx_animation_clip = animate_text_scale(
+                            text_content=text_content,
+                            total_duration=fx_clip_actual_duration,
+                            screen_size=target_dims,
+                            font_props=fx_font_props if fx_font_props else None, # Pass None to use full defaults in animate_text_scale
+                            position=text_position,
+                            start_scale=start_scale,
+                            end_scale=end_scale,
+                            is_transparent=True, # Ensure transparent background
+                            apply_fade=apply_fade_for_scale,
+                            fade_proportion=fade_proportion_for_scale
+                        )
+
+                        if fx_animation_clip:
+                            fx_animation_clip = fx_animation_clip.set_start(scene_start_time)
+                            processed_fx_clips.append(fx_animation_clip)
+                            logger.info(f"    Successfully prepared FX for scene {scene_id} with text: '{text_content}', Start: {scene_start_time:.2f}s, Dur: {fx_clip_actual_duration:.2f}s")
+                        else:
+                            logger.warning(f"    Failed to generate {fx_type} for scene {scene_id}")
+                    except Exception as e_fx_scale:
+                        logger.error(f"    Error applying FX {fx_type} for scene {scene_id}: {e_fx_scale}", exc_info=True)
                 else:
                     logger.info(f"  Skipping unknown FX type: {fx_type} for scene {scene_id}")
 

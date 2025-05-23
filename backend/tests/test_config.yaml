@@ -27,5 +27,5 @@ tts_settings:
 # Paths - relative to workspace root for consistency in tests
 paths:
   test_story_md: "public/byd.md"
-  test_output_base_dir: "test_outputs" # Base directory for all test outputs for this flow
+  test_output_base_dir: "test_outputs_byd" # Base directory for all test outputs for this flow
   # font_path: "backend/assets/fonts/YourFont.ttf" # If tests need specific fonts

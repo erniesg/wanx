@@ -1,4 +1,5 @@
 from moviepy.editor import TextClip, CompositeVideoClip, ColorClip
+import os # Add os import for path joining
 
 def animate_text_fade(
     text_content: str,
@@ -9,7 +10,7 @@ def animate_text_fade(
     fadein_duration: float = 1.0,
     fadeout_duration: float = 1.0,
     bg_color: tuple[int, int, int] = (0, 0, 0),
-    is_transparent: bool = False
+    is_transparent: bool = True
 ) -> CompositeVideoClip:
     """
     Creates a text animation that fades in, holds, and fades out.
@@ -29,8 +30,30 @@ def animate_text_fade(
     Returns:
         A CompositeVideoClip containing the fading text animation.
     """
+    default_font_path = os.path.join(os.path.dirname(__file__), '../../../assets/fonts/PoetsenOne-Regular.ttf')
     if font_props is None:
-        font_props = {'font': 'Arial-Bold', 'fontsize': 70, 'color': 'white'}
+        font_props = {'font': default_font_path, 'fontsize': 100, 'color': 'white', 'stroke_color': 'black', 'stroke_width': 2}
+    else: # Ensure defaults are applied if not provided
+        font_props.setdefault('font', default_font_path)
+        font_props.setdefault('fontsize', 100)
+        font_props.setdefault('color', 'white')
+        font_props.setdefault('stroke_color', 'black')
+        font_props.setdefault('stroke_width', 2)
+
+    # Handle position adjustments
+    pos_x, pos_y = position
+    if isinstance(pos_y, str) and pos_y.lower() == 'bottom':
+        raise ValueError("Bottom placement is reserved for captions and not allowed for text animations.")
+    if isinstance(pos_y, str) and pos_y.lower() == 'top':
+        pos_y = 50 # Apply padding
+
+    # Ensure x is centered if only y is specified as a keyword (e.g. 'top')
+    if isinstance(pos_x, str) and pos_x.lower() == 'center' and isinstance(pos_y, int):
+        final_position = ('center', pos_y)
+    elif isinstance(pos_y, str) and pos_y.lower() == 'center' and isinstance(pos_x, int):
+        final_position = (pos_x, 'center')
+    else:
+        final_position = (pos_x, pos_y)
 
     if fadein_duration + fadeout_duration > total_duration:
         # Adjust fades if they are too long relative to total_duration
@@ -50,7 +73,7 @@ def animate_text_fade(
         pass # TextClip will be on a solid background_clip later
 
     text_clip = TextClip(text_content, **actual_font_props)
-    text_clip = text_clip.set_position(position)
+    text_clip = text_clip.set_position(final_position) # Use adjusted position
     text_clip_effect = text_clip.set_duration(total_duration)
 
     if fadein_duration > 0:
@@ -76,11 +99,11 @@ def animate_text_scale(
     font_props: dict = None,
     start_scale: float = 1.0,
     end_scale: float = 2.0,
-    # position_func: callable = None, # More complex, for now simple center
+    position: tuple[str | int, str | int] = ('center', 'center'),
     bg_color: tuple[int, int, int] = (0, 0, 0),
-    is_transparent: bool = False,
-    apply_fade: bool = True, # Whether to apply a gentle fade in/out with scaling
-    fade_proportion: float = 0.2 # Proportion of total_duration for fade in/out if apply_fade is True
+    is_transparent: bool = True,
+    apply_fade: bool = True,
+    fade_proportion: float = 0.2
 ) -> CompositeVideoClip:
     """
     Creates a text animation that scales over time, centered on the screen.
@@ -101,10 +124,22 @@ def animate_text_scale(
     Returns:
         A CompositeVideoClip containing the scaling text animation.
     """
+    default_font_path = os.path.join(os.path.dirname(__file__), '../../../assets/fonts/PoetsenOne-Regular.ttf')
     if font_props is None:
-        font_props = {'font': 'Arial-Bold', 'fontsize': 70, 'color': 'white'}
+        font_props = {'font': default_font_path, 'fontsize': 100, 'color': 'white', 'stroke_color': 'black', 'stroke_width': 2}
+    else: # Ensure defaults are applied if not provided
+        font_props.setdefault('font', default_font_path)
+        font_props.setdefault('fontsize', 100)
+        font_props.setdefault('color', 'white')
+        font_props.setdefault('stroke_color', 'black')
+        font_props.setdefault('stroke_width', 2)
 
     screen_w, screen_h = screen_size
+
+    # Handle position adjustments for scaling
+    pos_x_in, pos_y_in = position
+    if isinstance(pos_y_in, str) and pos_y_in.lower() == 'bottom':
+        raise ValueError("Bottom placement is reserved for captions and not allowed for text animations.")
 
     # Create TextClip. If transparent, its own background is transparent.
     base_text_clip = TextClip(text_content, **font_props)
@@ -116,9 +151,35 @@ def animate_text_scale(
 
     def position_func_centered(t):
         current_scale = resize_func(t)
-        x = (screen_w - text_w * current_scale) / 2
-        y = (screen_h - text_h * current_scale) / 2
-        return (x, y)
+        # Resolve initial position
+        current_x, current_y = pos_x_in, pos_y_in
+
+        if isinstance(current_x, str) and current_x.lower() == 'center':
+            x = (screen_w - text_w * current_scale) / 2
+        else:
+            x = current_x # Assume numeric if not 'center'
+
+        if isinstance(current_y, str) and current_y.lower() == 'center':
+            y = (screen_h - text_h * current_scale) / 2
+        elif isinstance(current_y, str) and current_y.lower() == 'top':
+            y = 50 # Apply padding for top
+        else:
+            y = current_y # Assume numeric if not 'center' or 'top'
+
+        # Adjust for scaling if centered, otherwise keep fixed position (scaling from top-left of text)
+        if isinstance(pos_x_in, str) and pos_x_in.lower() == 'center':
+             x_final = (screen_w - text_w * current_scale) / 2
+        else: # if x is a number, it's an absolute position
+             x_final = pos_x_in
+
+        if isinstance(pos_y_in, str) and pos_y_in.lower() == 'center':
+            y_final = (screen_h - text_h * current_scale) / 2
+        elif isinstance(pos_y_in, str) and pos_y_in.lower() == 'top':
+            y_final = 50 # Apply padding for top
+        else: # if y is a number, it's an absolute position
+            y_final = pos_y_in
+
+        return (x_final, y_final)
 
     # Animated text clip (scaling and dynamic centering)
     # Recreate the TextClip here to apply .resize and .set_position that take functions.
@@ -152,65 +213,82 @@ def animate_text_scale(
 if __name__ == '__main__':
     width, height = 1920, 1080
     output_dir = "./temp_video_outputs"
-    import os
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
     print("Testing animate_text_fade...")
     effect1_duration = 4.0
     fade_animation_transparent = animate_text_fade(
-        text_content="Fade Transparent",
+        text_content="Fade Top Padded",
         total_duration=effect1_duration,
         screen_size=(width, height),
         fadein_duration=1.0,
         fadeout_duration=1.0,
-        font_props={'font': 'Arial-Bold', 'fontsize': 100, 'color': 'cyan'},
+        position=('center', 'top'), # Test top padding
         is_transparent=True,
     )
-    if fade_animation_transparent.duration > 0 : fade_animation_transparent.write_videofile(os.path.join(output_dir, "effect_fade_transparent.mp4"), fps=30, logger=None)
-    print(f"Created fade_animation (transparent). Duration: {fade_animation_transparent.duration}s.")
+    if fade_animation_transparent.duration > 0 : fade_animation_transparent.write_videofile(os.path.join(output_dir, "effect_fade_transparent_top.mp4"), fps=30, logger=None)
+    print(f"Created fade_animation (transparent, top). Duration: {fade_animation_transparent.duration}s.")
 
     fade_animation_solid = animate_text_fade(
-        text_content="Fade Solid",
+        text_content="Fade Solid Center",
         total_duration=effect1_duration,
         screen_size=(width, height),
         fadein_duration=1.0,
         fadeout_duration=1.0,
-        font_props={'font': 'Arial-Bold', 'fontsize': 100, 'color': 'magenta'},
         is_transparent=False,
-        bg_color=(30,30,30)
     )
-    if fade_animation_solid.duration > 0 : fade_animation_solid.write_videofile(os.path.join(output_dir, "effect_fade_solid.mp4"), fps=30, logger=None)
-    print(f"Created fade_animation (solid). Duration: {fade_animation_solid.duration}s.")
+    # Test bottom placement error
+    try:
+        fade_animation_bottom_error = animate_text_fade(
+            text_content="Fade Bottom Error",
+            total_duration=1.0,
+            screen_size=(width, height),
+            position=('center', 'bottom')
+        )
+    except ValueError as e:
+        print(f"Caught expected error for bottom placement: {e}")
+
+    if fade_animation_solid.duration > 0 : fade_animation_solid.write_videofile(os.path.join(output_dir, "effect_fade_solid_center.mp4"), fps=30, logger=None)
+    print(f"Created fade_animation (solid, center). Duration: {fade_animation_solid.duration}s.")
 
     print("\nTesting animate_text_scale...")
     effect_scale_up_duration = 3.0
     scale_up_animation_transparent = animate_text_scale(
-        text_content="Zoom Transparent",
+        text_content="Zoom Top Padded",
         total_duration=effect_scale_up_duration,
         screen_size=(width, height),
-        font_props={'font': 'Impact', 'fontsize': 80, 'color': 'yellow'},
+        position=('center', 'top'), # Test top padding for scale
         start_scale=0.5,
         end_scale=2.0,
         is_transparent=True,
         apply_fade=True
     )
-    if scale_up_animation_transparent.duration > 0 : scale_up_animation_transparent.write_videofile(os.path.join(output_dir, "effect_scale_up_transparent.mp4"), fps=30, logger=None)
-    print(f"Created scale_up_animation (transparent). Duration: {scale_up_animation_transparent.duration}s.")
+    if scale_up_animation_transparent.duration > 0 : scale_up_animation_transparent.write_videofile(os.path.join(output_dir, "effect_scale_up_transparent_top.mp4"), fps=30, logger=None)
+    print(f"Created scale_up_animation (transparent, top). Duration: {scale_up_animation_transparent.duration}s.")
 
     scale_up_animation_solid = animate_text_scale(
-        text_content="Zoom Solid",
+        text_content="Zoom Solid Center",
         total_duration=effect_scale_up_duration,
         screen_size=(width, height),
-        font_props={'font': 'Impact', 'fontsize': 80, 'color': 'lime'},
         start_scale=0.5,
         end_scale=2.0,
         is_transparent=False,
-        bg_color=(0, 50, 0),
         apply_fade=True
     )
-    if scale_up_animation_solid.duration > 0 : scale_up_animation_solid.write_videofile(os.path.join(output_dir, "effect_scale_up_solid.mp4"), fps=30, logger=None)
-    print(f"Created scale_up_animation (solid). Duration: {scale_up_animation_solid.duration}s.")
+    # Test bottom placement error for scale
+    try:
+        scale_animation_bottom_error = animate_text_scale(
+            text_content="Scale Bottom Error",
+            total_duration=1.0,
+            screen_size=(width, height),
+            position=('center', 'bottom')
+        )
+    except ValueError as e:
+        print(f"Caught expected error for bottom placement (scale): {e}")
+
+    if scale_up_animation_solid.duration > 0 : scale_up_animation_solid.write_videofile(os.path.join(output_dir, "effect_scale_up_solid_center.mp4"), fps=30, logger=None)
+    print(f"Created scale_up_animation (solid, center). Duration: {scale_up_animation_solid.duration}s.")
 
     # Test with zero duration
     print("\nTesting zero duration...")
@@ -218,5 +296,19 @@ if __name__ == '__main__':
     print(f"Created zero_duration_fade. Duration: {zero_duration_fade.duration}s.")
     zero_duration_scale = animate_text_scale("ZeroDurScale", 0, (100,100), is_transparent=True)
     print(f"Created zero_duration_scale. Duration: {zero_duration_scale.duration}s.")
+
+    print("\nTesting specific TEXT_OVERLAY_SCALE case (45%)...")
+    scene_003_duration = 2.68 # Example: 7.38s (end) - 4.7s (start)
+    scale_animation_45_percent = animate_text_scale(
+        text_content="45%",
+        total_duration=scene_003_duration,
+        screen_size=(width, height), # Using 1920x1080 from existing test setup
+        position=('center', 'center'),
+        # Using default font_props, start_scale=1.0, end_scale=2.0, is_transparent=True, apply_fade=True
+    )
+    output_filename_45_percent = os.path.join(output_dir, "effect_scale_45_percent.mp4")
+    if scale_animation_45_percent.duration > 0:
+        scale_animation_45_percent.write_videofile(output_filename_45_percent, fps=30, logger=None)
+    print(f"Created scale_animation_45_percent. Duration: {scale_animation_45_percent.duration}s. Output: {output_filename_45_percent}")
 
     print(f"\nExamples created. Check the '{output_dir}' directory.")
