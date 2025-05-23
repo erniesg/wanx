@@ -451,30 +451,46 @@ def orchestrate_video_assets():
     logger.info("Initial asset orchestration pass completed.")
 
     # --- 4. Poll for Argil Video Completion and Download ---
-    if ARGIL_API_KEY: # Only poll if Argil key is available
-        logger.info("Proceeding to poll Argil for video completions and download.")
+    if ARGIL_API_KEY: # Only run polling if Argil API key is available
         scene_plans = poll_and_download_argil_videos(scene_plans, ARGIL_API_KEY, video_project_id)
     else:
-        logger.info("ARGIL_API_KEY not set. Skipping Argil video polling and download phase.")
+        logger.warning("ARGIL_API_KEY not set. Skipping Argil video polling and download.")
+        # Mark Argil scenes as skipped if no API key
+        for scene_plan_item in scene_plans:
+            if scene_plan_item.get("visual_type") == "AVATAR":
+                scene_plan_item["argil_render_status"] = "skipped_no_api_key"
 
-    # Prepare the comprehensive summary data
-    orchestration_summary_data = {
+    # --- 5. Save Orchestration Summary ---
+    orchestration_summary = {
         "video_project_id": video_project_id,
-        "master_vo_path": str(MASTER_VOICEOVER_FILE) if MASTER_VOICEOVER_FILE.exists() else None,
+        "master_vo_path": str(MASTER_VOICEOVER_FILE),
         "background_music_path": str(downloaded_music_path) if downloaded_music_path else None,
-        "scene_plans": scene_plans
+        "scene_plans": scene_plans,
+        "original_script_file_used": str(ORIGINAL_SCRIPT_FILE),
+        "scene_plan_file_used": str(SCENE_PLAN_FILE)
     }
 
-    # Save the updated scene_plans with new asset info (including polled status and download paths)
-    try:
-        with open(ORCHESTRATION_SUMMARY_FILE, 'w') as f:
-            json.dump(orchestration_summary_data, f, indent=2)
-        logger.info(f"Orchestration summary saved to: {ORCHESTRATION_SUMMARY_FILE}")
-    except Exception as e:
-        logger.error(f"Failed to save orchestration summary: {e}")
+    os.makedirs(TEST_OUTPUT_DIR, exist_ok=True)
+    with open(ORCHESTRATION_SUMMARY_FILE, 'w') as f:
+        json.dump(orchestration_summary, f, indent=2)
+    logger.info(f"Orchestration summary saved to: {ORCHESTRATION_SUMMARY_FILE}")
 
+    # Clean up temporary sliced audio directory
+    if temp_sliced_audio_dir.exists():
+        try:
+            # Remove all files in the directory
+            for item in temp_sliced_audio_dir.iterdir():
+                if item.is_file():
+                    item.unlink()
+            # Remove the directory itself
+            temp_sliced_audio_dir.rmdir()
+            logger.info(f"Cleaned up temporary sliced audio directory: {temp_sliced_audio_dir}")
+        except Exception as e:
+            logger.warning(f"Error cleaning up temporary sliced audio directory {temp_sliced_audio_dir}: {e}")
 
-if __name__ == "__main__":
+    logger.info("Video asset orchestration finished.")
+
+if __name__ == '__main__':
     # This allows running the orchestrator directly if the prerequisite files exist in test_outputs/
     # Ensure .env is populated with ARGIL_API_KEY, S3_BUCKET_NAME, AWS_DEFAULT_REGION, FREESOUND_API_KEY
     # Also ensure ffmpeg is installed and in PATH for audio slicing.

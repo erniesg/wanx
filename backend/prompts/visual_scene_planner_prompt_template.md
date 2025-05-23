@@ -26,6 +26,7 @@ Task:
    - Align scenes with natural pauses or shifts in topic in the transcript.
    - Ensure `start_time` is the start of the first word, and `end_time` is the end of the last word of the scene.
    - The `text_for_scene` must be the exact concatenation of words from the transcript for that scene.
+   - The scenes must be contiguous and cover the entire span of the provided Word-Level Transcript. The `end_time` of the last scene should closely match the `end_time` of the last word in the transcript. The `start_time` of the first scene should match the `start_time` of the first word in the transcript.
 
 2. For each scene, determine:
    - `original_script_part_ref`: Identify which major script segment (hook, conflict, body, conclusion) this scene's text primarily belongs to.
@@ -63,4 +64,5 @@ Return a JSON list of scene plan objects. Each object must conform to this schem
 Important Considerations:
 - Strictly adhere to the {{min_segment_duration}}-{{max_segment_duration}}s scene duration constraint.
 - Ensure `text_for_scene` accurately reflects the words from the transcript for the given `start_time` and `end_time`.
+- Ensure that the generated scenes cover the entire duration of the input transcript. The `start_time` of the first scene should be the `start_time` of the first word in the transcript, and the `end_time` of the last scene should be the `end_time` of the last word in the transcript.
 - Be concise and actionable.
