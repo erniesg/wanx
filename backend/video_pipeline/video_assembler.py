@@ -10,7 +10,7 @@ import logging
 import tempfile # Added for temporary audio/video files
 from moviepy.editor import (
     concatenate_videoclips, AudioFileClip, VideoFileClip, VideoClip, CompositeVideoClip, ImageClip,
-    concatenate_audioclips, CompositeAudioClip
+    concatenate_audioclips, CompositeAudioClip, TextClip # Added TextClip for potential future use
 )
 
 # Project-level imports (ensure these paths are correct relative to where this script is run from)
@@ -21,6 +21,8 @@ from backend.video_pipeline.video_utils import (
     TIKTOK_DIMS,
     DEFAULT_FPS
 )
+from backend.text_to_video.fx.text_animations import animate_text_fade # For FX
+from backend.text_to_video.fx import add_captions as add_captions_fx # For captions step
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -36,12 +38,40 @@ if not DEFAULT_INPUT_SUMMARY.exists():
 DEFAULT_TRANSCRIPTION_PATH = PROJECT_ROOT / "test_outputs" / "e2e_transcription_output.json"
 
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "test_outputs" / "final_video_assembly"
-DEFAULT_OUTPUT_FILENAME = "assembled_video_step1.mp4"
 TEMP_ASSEMBLY_DIR = PROJECT_ROOT / "test_outputs" / "temp_assembly_files" # For inspectable temp files
 TEMP_ASSEMBLY_DIR.mkdir(parents=True, exist_ok=True) # Ensure it exists
 
+# Output filenames for each step
+OUTPUT_FILENAME_STEP1_BASE = "assembled_video_step1_base.mp4"
+OUTPUT_FILENAME_STEP2_FX = "assembled_video_step2_fx.mp4"
+OUTPUT_FILENAME_STEP3_FINAL = "assembled_video_step3_final.mp4"
+
 TIKTOK_ASPECT_RATIO = TIKTOK_DIMS[0] / TIKTOK_DIMS[1]
 DEFAULT_TARGET_FPS_ASSEMBLY = 24 # Consistent FPS for assembly output
+
+# FX Configuration
+FX_TEXT_SIZE_MAPPING = {
+    "small": 60,
+    "medium": 80,
+    "large": 100,
+    "extralarge": 130,
+    "default": 80
+}
+FX_DEFAULT_FADE_DURATION = 0.5 # seconds for fadein/fadeout
+
+# Caption Configuration (can be expanded or moved to a config file)
+CAPTION_FONT = "Bangers-Regular.ttf" # Ensure this font is in backend/assets/fonts/
+CAPTION_FONT_SIZE = 70
+CAPTION_FONT_COLOR = "yellow"
+CAPTION_STROKE_WIDTH = 2
+CAPTION_STROKE_COLOR = "black"
+CAPTION_HIGHLIGHT_WORD = True
+CAPTION_WORD_HIGHLIGHT_COLOR = "red"
+CAPTION_LINE_COUNT = 2 # Max lines per caption block
+CAPTION_PADDING = 50 # Padding from edge for caption bounding box
+CAPTION_POSITION = "bottom-center" # As understood by add_captions_fx
+CAPTION_SHADOW_STRENGTH = 0.5
+CAPTION_SHADOW_BLUR = 0.05
 
 def debug_single_scene(scene_id_to_debug: str, orchestration_summary_path: str):
     logger.info(f"--- DEBUGGING SINGLE SCENE: {scene_id_to_debug} ---")
@@ -100,98 +130,74 @@ def debug_single_scene(scene_id_to_debug: str, orchestration_summary_path: str):
     else:
         logger.error(f"Failed to process debug scene {scene_id_to_debug} from asset {asset_path_str}")
 
-def assemble_video_step1(
-    orchestration_summary_path: str = str(DEFAULT_INPUT_SUMMARY),
-    output_dir: str = str(DEFAULT_OUTPUT_DIR),
-    output_filename: str = DEFAULT_OUTPUT_FILENAME,
-    transcription_path: str = str(DEFAULT_TRANSCRIPTION_PATH)
-):
+def assemble_video_step1_base_visuals_and_audio(
+    orchestration_summary_path: str,
+    output_dir_path: pathlib.Path, # Changed to pathlib.Path
+    output_filename: str,
+    transcription_path: str
+) -> str | None: # Returns path to the generated video or None on failure
     """
-    Assembles the main video track from scene assets and master voiceover.
-    Three-step process:
-    1A: Create final audio track (VO + BG music) and write to temp audio file.
-    1B: Create final silent visual track (concatenated scenes) and write to temp video file.
-    1C: Combine temp audio and video files into final output.
+    Step 1: Assembles base video with concatenated visuals and final audio (VO + BG music).
+    NO FX are applied in this step.
     """
-    logger.info(f"Starting video assembly (3-step) using summary: {orchestration_summary_path}")
-    output_dir_path = pathlib.Path(output_dir)
-    output_dir_path.mkdir(parents=True, exist_ok=True)
+    logger.info(f"--- STEP 1: Assembling Base Visuals and Audio --- ")
+    logger.info(f"Using summary: {orchestration_summary_path}")
     final_output_path = output_dir_path / output_filename
 
+    # Load orchestration summary
     if not pathlib.Path(orchestration_summary_path).exists():
         logger.error(f"Orchestration summary file not found: {orchestration_summary_path}")
-        return
-    if not pathlib.Path(transcription_path).exists():
-        logger.error(f"Transcription file not found: {transcription_path}. Needed for precise speech end time.")
-        return
-
+        return None
     try:
-        with open(orchestration_summary_path, 'r') as f:
-            summary_data = json.load(f)
+        with open(orchestration_summary_path, 'r') as f: summary_data = json.load(f)
     except Exception as e:
-        logger.error(f"Failed to load or parse orchestration summary {orchestration_summary_path}: {e}")
-        return
+        logger.error(f"Failed to load or parse orchestration summary {orchestration_summary_path}: {e}"); return None
 
+    # Load transcription data for timing
+    if not pathlib.Path(transcription_path).exists():
+        logger.error(f"Transcription file not found: {transcription_path}"); return None
     try:
-        with open(transcription_path, 'r') as f:
-            transcription_data = json.load(f)
-        if not transcription_data:
-            logger.error("Transcription data is empty.")
-            return
+        with open(transcription_path, 'r') as f: transcription_data = json.load(f)
+        if not transcription_data: logger.error("Transcription data is empty."); return None
         max_transcription_time = transcription_data[-1]['end']
         logger.info(f"Determined max_transcription_time (end of last word): {max_transcription_time:.2f}s")
     except Exception as e:
-        logger.error(f"Failed to load or parse transcription data from {transcription_path}: {e}")
-        return
+        logger.error(f"Failed to load or parse transcription data from {transcription_path}: {e}"); return None
 
-    scene_plans = []
-    master_vo_path_str = None
-    background_music_path_str = None
+    # Extract scene_plans, master_vo_path, background_music_path
+    scene_plans = summary_data.get("scene_plans", []) if isinstance(summary_data, dict) else summary_data
+    if not isinstance(scene_plans, list): # Handle case where summary_data was dict but no scene_plans key
+        logger.error("Scene plans are not in a list format or not found."); return None
 
-    if isinstance(summary_data, dict):
-        scene_plans = summary_data.get("scene_plans", [])
-        master_vo_path_str = summary_data.get("master_vo_path")
-        background_music_path_str = summary_data.get("background_music_path")
-    elif isinstance(summary_data, list):
-        logger.warning("Orchestration summary is a list (older format). Master VO path might be missing.")
-        scene_plans = summary_data
+    master_vo_path_str = summary_data.get("master_vo_path") if isinstance(summary_data, dict) else None
+    background_music_path_str = summary_data.get("background_music_path") if isinstance(summary_data, dict) else None
+
+    if isinstance(summary_data, list): # Fallback for older list-based summary for master_vo_path
+        logger.warning("Orchestration summary is a list (older format). Attempting to find fallback Master VO.")
         potential_vo_path = PROJECT_ROOT / "test_outputs" / "How_Tencent_Bought_Its_Way_Into_AI_s_Top_8_master_vo.mp3"
-        if potential_vo_path.exists():
-            master_vo_path_str = str(potential_vo_path)
-            logger.info(f"Using fallback master VO path: {master_vo_path_str}")
-        else:
-            logger.error("Master VO path could not be determined from list-formatted summary and fallback not found.")
-            return
-    else:
-        logger.error(f"Unknown format for orchestration summary at {orchestration_summary_path}")
-        return
+        if potential_vo_path.exists(): master_vo_path_str = str(potential_vo_path)
+        else: logger.error("Master VO path could not be determined from list-formatted summary and fallback not found."); return None
 
-    if not scene_plans:
-        logger.error("No scene plans found in the summary. Cannot assemble video.")
-        return
+    if not scene_plans: logger.error("No scene plans found."); return None
     if not master_vo_path_str or not pathlib.Path(master_vo_path_str).exists():
-        logger.error(f"Master voiceover file not found at '{master_vo_path_str}'. Cannot assemble video.")
-        return
+        logger.error(f"Master voiceover file not found at '{master_vo_path_str}'."); return None
 
-    # --- Define temporary file paths using TEMP_ASSEMBLY_DIR ---
-    temp_dir = TEMP_ASSEMBLY_DIR # Use the persistent temp directory
-    # temp_dir path object already created and ensured to exist at the start of the script
+    # Temporary file paths for this step
     vo_filename_stem = pathlib.Path(master_vo_path_str).stem
-    temp_final_audio_path = temp_dir / f"temp_final_audio_{vo_filename_stem}.mp3"
-    temp_final_visual_path = temp_dir / f"temp_final_visual_{vo_filename_stem}.mp4"
-    logger.info(f"Temporary audio will be stored as: {temp_final_audio_path}")
-    logger.info(f"Temporary visuals will be stored as: {temp_final_visual_path}")
+    temp_final_audio_path = TEMP_ASSEMBLY_DIR / f"step1_temp_audio_{vo_filename_stem}.mp3"
+    temp_final_visual_path = TEMP_ASSEMBLY_DIR / f"step1_temp_visual_{vo_filename_stem}.mp4"
+    logger.info(f"Step 1 Temp audio: {temp_final_audio_path}")
+    logger.info(f"Step 1 Temp visuals: {temp_final_visual_path}")
 
+    # Fallback for background music
     if not background_music_path_str or not pathlib.Path(background_music_path_str).exists():
         fallback_bg_music_path = PROJECT_ROOT / "test_outputs" / "background_music.mp3"
         if fallback_bg_music_path.exists():
-            logger.warning(f"Background music path not found or invalid in summary. Using fallback: {fallback_bg_music_path}")
+            logger.warning(f"BG music not in summary or invalid. Using fallback: {fallback_bg_music_path}")
             background_music_path_str = str(fallback_bg_music_path)
-        elif background_music_path_str:
-             logger.warning(f"Background music path '{background_music_path_str}' from summary is invalid and fallback {fallback_bg_music_path} also not found.")
-        else:
-             logger.info(f"No background music path in summary and fallback {fallback_bg_music_path} not found. Proceeding without background music.")
+        # else: logger info/warning about no BG music will be handled in audio prep section
 
+    # --- Process scene assets into MoviePy clips (NO FX HERE) ---
     source_clips_for_visual_track = []
     last_scene_planned_end_time = 0.0
 
@@ -201,333 +207,443 @@ def assemble_video_step1(
         planned_scene_end_time = scene.get("end_time")
 
         if planned_scene_start_time is None or planned_scene_end_time is None:
-            logger.warning(f"Scene {scene.get('scene_id', i+1)} is missing start_time or end_time. Skipping.")
-            continue
-
+            logger.warning(f"Scene {scene.get('scene_id', i+1)} is missing start_time or end_time. Skipping."); continue
         current_scene_original_planned_duration = planned_scene_end_time - planned_scene_start_time
         last_scene_planned_end_time = planned_scene_end_time
-
         if current_scene_original_planned_duration <= 0:
-            logger.warning(f"Scene {scene.get('scene_id', i+1)} has non-positive original planned duration ({current_scene_original_planned_duration:.2f}s). Skipping.")
-            continue
+            logger.warning(f"Scene {scene.get('scene_id', i+1)} non-positive duration. Skipping."); continue
 
         duration_for_this_clip_processing = current_scene_original_planned_duration
-
         if i < len(scene_plans) - 1:
             next_scene = scene_plans[i+1]
             next_scene_planned_start_time = next_scene.get("start_time")
             if next_scene_planned_start_time is not None:
                 gap_after_current_to_next_start = next_scene_planned_start_time - planned_scene_end_time
                 if gap_after_current_to_next_start > 0.01:
-                    logger.info(f"  Gap of {gap_after_current_to_next_start:.2f}s detected. Extending current scene {scene.get('scene_id', i+1)}'s visual.")
                     duration_for_this_clip_processing += gap_after_current_to_next_start
 
-        asset_path_str = None
-        visual_type = scene.get("visual_type")
-
+        asset_path_str = None; visual_type = scene.get("visual_type")
         if visual_type == "AVATAR": asset_path_str = scene.get("avatar_video_path")
         elif visual_type == "STOCK_VIDEO": asset_path_str = scene.get("video_asset_path")
         elif visual_type == "STOCK_IMAGE": asset_path_str = scene.get("image_asset_path")
-        else:
-            logger.warning(f"Unknown visual_type '{visual_type}' for scene {scene.get('scene_id', i+1)}. Skipping.")
-            continue
+        else: logger.warning(f"Unknown visual_type '{visual_type}'. Skipping."); continue
 
         if not asset_path_str or not pathlib.Path(asset_path_str).exists():
-            logger.error(f"Asset path for scene {scene.get('scene_id', i+1)} not found or invalid: '{asset_path_str}'. Skipping scene.")
-            continue
+            logger.error(f"Asset path for '{asset_path_str}' not found. Skipping."); continue
 
         processed_clip = None
         if visual_type == "STOCK_IMAGE":
             processed_clip = process_image_to_video_clip(asset_path_str, duration_for_this_clip_processing, TIKTOK_DIMS, fps=DEFAULT_TARGET_FPS_ASSEMBLY)
-        else: # AVATAR or STOCK_VIDEO
+        else:
             processed_clip = process_video_clip(asset_path_str, duration_for_this_clip_processing, TIKTOK_DIMS, target_fps=DEFAULT_TARGET_FPS_ASSEMBLY)
 
         if processed_clip:
-            if processed_clip.duration is None or processed_clip.duration < 0.01:
-                logger.warning(f"  Scene {scene.get('scene_id', i+1)} processed into a clip with near-zero or None duration ({processed_clip.duration}). Skipping append.")
-                if hasattr(processed_clip, 'close'): processed_clip.close()
-                continue
+            if processed_clip.duration is None or processed_clip.duration < 0.01: # Check duration
+                logger.warning(f"Scene {scene.get('scene_id', i+1)} processed clip has zero/None duration. Skipping.")
+                if hasattr(processed_clip, 'close'): processed_clip.close(); continue
 
-            processed_clip = processed_clip.set_audio(None) # Ensure all visual segments are silent before concat
+            processed_clip = processed_clip.set_audio(None) # Ensure silent
             source_clips_for_visual_track.append(processed_clip)
             clip_fps = processed_clip.fps if hasattr(processed_clip, 'fps') and processed_clip.fps else DEFAULT_TARGET_FPS_ASSEMBLY
             num_frames = int(processed_clip.duration * clip_fps) if processed_clip.duration else 0
-            logger.info(f"  Successfully processed scene {scene.get('scene_id', i+1)}. Effective duration: {duration_for_this_clip_processing:.2f}s. Actual clip duration: {processed_clip.duration:.2f}s, FPS: {clip_fps}, Frames: {num_frames}")
+            logger.info(f"  Successfully processed scene {scene.get('scene_id', i+1)}. Actual clip duration: {processed_clip.duration:.2f}s, FPS: {clip_fps}, Frames: {num_frames}")
         else:
-            logger.error(f"Failed to process asset for scene {scene.get('scene_id', i+1)} from path {asset_path_str}. Skipping scene.")
+            logger.error(f"Failed to process asset for scene {scene.get('scene_id', i+1)}. Skipping.")
 
-    if not source_clips_for_visual_track:
-        logger.error("No scenes were successfully processed. Cannot create video.")
-        return
+    if not source_clips_for_visual_track: logger.error("No scenes processed for visual track."); return None
 
-    total_calculated_duration_pre_trailing_fill = sum(clip.duration for clip in source_clips_for_visual_track if clip and clip.duration is not None)
-    logger.info(f"Total duration of visuals after inter-scene gap filling (before trailing speech fill): {total_calculated_duration_pre_trailing_fill:.2f}s")
-
+    # --- Trailing transcription gap filling (remains the same) ---
+    total_calculated_duration_pre_trailing_fill = sum(c.duration for c in source_clips_for_visual_track if c and c.duration is not None)
     current_visual_timeline_end = total_calculated_duration_pre_trailing_fill
-
     if current_visual_timeline_end < max_transcription_time:
         trailing_speech_to_cover = max_transcription_time - current_visual_timeline_end
         if trailing_speech_to_cover > 0.01 and source_clips_for_visual_track:
-            logger.info(f"  Visuals end at {current_visual_timeline_end:.2f}s, but transcription continues until {max_transcription_time:.2f}s. Extending last clip by {trailing_speech_to_cover:.2f}s.")
             last_visual_clip = source_clips_for_visual_track[-1]
             new_duration_for_last_clip = (last_visual_clip.duration or 0) + trailing_speech_to_cover
             try:
                 extended_last_clip = last_visual_clip.set_duration(new_duration_for_last_clip)
-                if extended_last_clip.duration is None or extended_last_clip.duration < 0.01:
-                     logger.warning(f"Extending last clip resulted in zero or None duration.")
-                else:
+                if extended_last_clip.duration and extended_last_clip.duration >= 0.01:
                     source_clips_for_visual_track[-1] = extended_last_clip
-                    logger.info(f"  Last clip extended. New total visual duration: {sum(c.duration for c in source_clips_for_visual_track if c and c.duration is not None):.2f}s")
-            except Exception as e:
-                logger.error(f"  Error extending last visual clip: {e}. Proceeding with unextended clip.")
+            except Exception as e: logger.error(f"Error extending last visual clip: {e}")
 
+    # --- Concatenate visual clips (remains the same) ---
     final_visual_track = None
     try:
-        logger.info(f"Concatenating {len(source_clips_for_visual_track)} processed scene clips.")
         final_visual_track = concatenate_videoclips(source_clips_for_visual_track, method="compose")
-        if not final_visual_track:
-            logger.error("concatenate_videoclips returned None. Cleaning up source clips and exiting.")
-            for clip in source_clips_for_visual_track:
-                if hasattr(clip, 'close'): clip.close()
-            return
-        if final_visual_track.fps is None:
+        if not final_visual_track: logger.error("concatenate_videoclips returned None."); return None # Clean up handled by finally
+        if final_visual_track.fps is None or final_visual_track.fps != DEFAULT_TARGET_FPS_ASSEMBLY:
             final_visual_track = final_visual_track.set_fps(DEFAULT_TARGET_FPS_ASSEMBLY)
-        elif final_visual_track.fps != DEFAULT_TARGET_FPS_ASSEMBLY:
-            final_visual_track = final_visual_track.set_fps(DEFAULT_TARGET_FPS_ASSEMBLY)
-        logger.info(f"Visual track concatenated. Duration: {final_visual_track.duration:.2f}s, FPS: {final_visual_track.fps}, Total Frames: {int(final_visual_track.duration * final_visual_track.fps)}")
-    except Exception as e:
-        logger.error(f"Error during concatenation of video clips: {e}")
-        for clip in source_clips_for_visual_track:
-            if hasattr(clip, 'close'): clip.close()
-        return
+        logger.info(f"Base visual track concatenated. Duration: {final_visual_track.duration:.2f}s, FPS: {final_visual_track.fps}")
+    except Exception as e: logger.error(f"Error concatenating video clips: {e}"); return None # Clean up handled by finally
 
-    master_audio_clip = None
-    bg_music_clip_original = None
-    final_audio_for_file_write = None
+    # --- STEP 1A (for this function): Prepare and Write Final Audio Track ---
+    master_audio_clip = None; bg_music_clip_original = None; final_audio_for_file_write = None
     actual_final_audio_duration = 0
-    bg_music_final_processed_clip = None # To help with closing
-
+    bg_music_final_processed_clip = None
     try:
-        logger.info(f"--- STEP 1A: Preparing Final Audio Track ---")
-        logger.info(f"Loading master voiceover from: {master_vo_path_str}")
         master_audio_clip = AudioFileClip(master_vo_path_str)
         final_audio_for_file_write = master_audio_clip
-
         if background_music_path_str and pathlib.Path(background_music_path_str).exists():
-            logger.info(f"Processing background music from: {background_music_path_str}")
             bg_music_clip_original = AudioFileClip(background_music_path_str)
-            bg_music_volume = 0.08
-            bg_fade_duration = 1.5
             target_audio_duration = master_audio_clip.duration
-
             bg_music_adjusted_duration_clip = None
             if bg_music_clip_original.duration < target_audio_duration:
-                num_loops = int(target_audio_duration / bg_music_clip_original.duration) + 1
-                # Need to handle the intermediate concatenate_audioclips for closing
-                temp_looped_bg_list = [bg_music_clip_original] * num_loops
+                temp_looped_bg_list = [bg_music_clip_original] * (int(target_audio_duration / bg_music_clip_original.duration) + 1)
                 bg_music_looped_intermediate = concatenate_audioclips(temp_looped_bg_list)
                 bg_music_adjusted_duration_clip = bg_music_looped_intermediate.set_duration(target_audio_duration)
-                # bg_music_looped_intermediate should be closed if concatenate_audioclips creates a new resource not managed by bg_music_adjusted_duration_clip
-                # However, MoviePy often reuses or manages internally. For safety, we can try closing.
-            else:
-                bg_music_adjusted_duration_clip = bg_music_clip_original.set_duration(target_audio_duration)
+            else: bg_music_adjusted_duration_clip = bg_music_clip_original.set_duration(target_audio_duration)
 
             if bg_music_adjusted_duration_clip:
-                bg_music_final_processed_clip = (
-                    bg_music_adjusted_duration_clip
-                    .volumex(bg_music_volume)
-                    .audio_fadein(bg_fade_duration)
-                    .audio_fadeout(bg_fade_duration)
-                )
+                bg_music_final_processed_clip = (bg_music_adjusted_duration_clip.volumex(0.08).audio_fadein(1.5).audio_fadeout(1.5))
                 final_audio_for_file_write = CompositeAudioClip([master_audio_clip, bg_music_final_processed_clip])
-                logger.info(f"Master VO composited with BG music. Resulting audio duration: {final_audio_for_file_write.duration:.2f}s")
-            else: # Should not happen if bg_music_clip_original was valid
-                logger.error("Background music clip (bg_music_adjusted_duration_clip) is None. Using master VO only.")
 
-        if final_audio_for_file_write:
-            actual_final_audio_duration = final_audio_for_file_write.duration
-            audio_fps = 44100 # Common audio sampling rate
-            total_audio_samples = int(actual_final_audio_duration * audio_fps)
-            logger.info(f"Writing final audio track to temporary file: {temp_final_audio_path} (Duration: {actual_final_audio_duration:.2f}s, Sampling Rate: {audio_fps}Hz, Total Samples: {total_audio_samples})")
-            final_audio_for_file_write.write_audiofile(str(temp_final_audio_path), fps=audio_fps, logger=None) # Changed logger
-            logger.info(f"Final audio track successfully written to {temp_final_audio_path}")
-        else:
-            logger.error("Final audio track (final_audio_for_file_write) is None. Cannot proceed.")
-            # Fall through to finally for cleanup
-            return
-    except Exception as e:
-        logger.error(f"Error preparing or writing final audio track: {e}")
-        return
+        if not final_audio_for_file_write: logger.error("Final audio track is None before write."); return None
+        actual_final_audio_duration = final_audio_for_file_write.duration
+        audio_fps = 44100
+        logger.info(f"Writing base audio to {temp_final_audio_path} (Dur: {actual_final_audio_duration:.2f}s)")
+        final_audio_for_file_write.write_audiofile(str(temp_final_audio_path), fps=audio_fps, logger=None)
+    except Exception as e: logger.error(f"Error preparing base audio: {e}"); return None
     finally:
-        logger.debug("Cleaning up audio clips used for temp audio file generation.")
-        if master_audio_clip and hasattr(master_audio_clip, 'close'): master_audio_clip.close()
-        if bg_music_clip_original and hasattr(bg_music_clip_original, 'close'): bg_music_clip_original.close()
-        # Close intermediates created during BG music processing
-        if 'bg_music_looped_intermediate' in locals() and hasattr(bg_music_looped_intermediate, 'close'):
-             bg_music_looped_intermediate.close()
-        if 'bg_music_adjusted_duration_clip' in locals() and hasattr(bg_music_adjusted_duration_clip, 'close') and bg_music_adjusted_duration_clip != bg_music_clip_original:
-             bg_music_adjusted_duration_clip.close()
-        if bg_music_final_processed_clip and hasattr(bg_music_final_processed_clip, 'close'):
-             bg_music_final_processed_clip.close()
-        # final_audio_for_file_write is a CompositeAudioClip, it doesn't have a .close itself usually,
-        # its sources are what need closing.
-        # if final_audio_for_file_write and hasattr(final_audio_for_file_write, 'close') and final_audio_for_file_write != master_audio_clip:
-        #     final_audio_for_file_write.close()
+        # Simplified audio cleanup for this step
+        for clip_obj in [master_audio_clip, bg_music_clip_original, final_audio_for_file_write, bg_music_final_processed_clip, locals().get('bg_music_looped_intermediate'), locals().get('bg_music_adjusted_duration_clip')]:
+            if clip_obj and hasattr(clip_obj, 'close'):
+                # Avoid double closing if objects are the same (e.g. final_audio_for_file_write might be master_audio_clip)
+                # This check isn't perfect for all aliasing but helps for direct assignment.
+                is_primary_source = (clip_obj == master_audio_clip or clip_obj == bg_music_clip_original)
+                is_final_composite = (clip_obj == final_audio_for_file_write)
+                if not (is_final_composite and clip_obj == master_audio_clip): # Avoid double-closing master if it was the final write object
+                    try: clip_obj.close()
+                    except Exception as e_close_audio: logger.warning(f"Minor error closing audio clip: {e_close_audio}")
 
-
-    final_visual_track_silent = None # Define for finally block
+    # --- STEP 1B (for this function): Prepare and Write Final SILENT Visual Track ---
+    final_visual_track_silent = None
     try:
-        logger.info(f"--- STEP 1B: Preparing Final Silent Visual Track ---")
-        if not final_visual_track:
-            logger.error("Final visual track is None before silent visual track prep. This should not happen.")
-            for clip in source_clips_for_visual_track: # Ensure these are closed if final_visual_track failed
-                if hasattr(clip, 'close'): clip.close()
-            return
-
+        if not final_visual_track: logger.error("Base visual track is None before silent write."); return None
         target_visual_duration = actual_final_audio_duration
-        logger.info(f"Visual track current duration: {final_visual_track.duration:.2f}s. Target duration (from audio): {target_visual_duration:.2f}s")
-
         if abs(final_visual_track.duration - target_visual_duration) > 0.01:
-            logger.info(f"Adjusting final visual track duration to match audio duration ({target_visual_duration:.2f}s)")
             final_visual_track = final_visual_track.set_duration(target_visual_duration)
-            logger.info(f"Visual track after duration sync: {final_visual_track.duration:.2f}s")
-
         final_visual_track_silent = final_visual_track.without_audio()
-
         output_fps = final_visual_track_silent.fps or DEFAULT_TARGET_FPS_ASSEMBLY
-        total_video_frames = int(final_visual_track_silent.duration * output_fps)
-
-        logger.info(f"Writing final SILENT visual track to temporary file: {temp_final_visual_path} (Duration: {final_visual_track_silent.duration:.2f}s, FPS: {output_fps}, Total Frames: {total_video_frames})")
-        final_visual_track_silent.write_videofile(
-            str(temp_final_visual_path),
-            codec="libx264",
-            audio=False,
-            fps=output_fps, # Use the possibly adjusted FPS
-            logger=None # Changed logger
-        )
-        logger.info(f"Final SILENT visual track successfully written to {temp_final_visual_path}")
-    except Exception as e:
-        logger.error(f"Error writing final silent visual track: {e}")
-        return
+        logger.info(f"Writing base silent visual to {temp_final_visual_path} (Dur: {final_visual_track_silent.duration:.2f}s, FPS: {output_fps})")
+        final_visual_track_silent.write_videofile(str(temp_final_visual_path), codec="libx264", audio=False, fps=output_fps, logger=None)
+    except Exception as e: logger.error(f"Error writing base silent visual: {e}"); return None
     finally:
-        logger.debug("Cleaning up visual clips used for temp silent video file generation.")
         if final_visual_track and hasattr(final_visual_track, 'close'): final_visual_track.close()
-        if final_visual_track_silent and hasattr(final_visual_track_silent, 'close') and final_visual_track_silent != final_visual_track:
-            final_visual_track_silent.close()
-        logger.info("Cleaning up individual source scene clips after temp visual track written.")
-        for clip_idx, clip in enumerate(source_clips_for_visual_track):
+        if final_visual_track_silent and hasattr(final_visual_track_silent, 'close') and final_visual_track_silent != final_visual_track: final_visual_track_silent.close()
+        for clip in source_clips_for_visual_track:
             if hasattr(clip, 'close'):
-                try:
-                    clip.close()
-                    logger.debug(f"Closed source scene clip {clip_idx}: {getattr(clip, 'filename', 'ImageClip/EffectClip')}")
-                except Exception as e_close:
-                    logger.warning(f"Error closing source scene clip {clip_idx}: {e_close}")
+                try: clip.close()
+                except Exception as e_close_src: logger.warning(f"Minor error closing source visual clip: {e_close_src}")
         source_clips_for_visual_track = []
 
-    final_video_loaded = None
-    final_audio_loaded = None
-    video_with_combined_audio = None
+    # --- STEP 1C (for this function): Combine Temporary Audio and Video ---
+    final_video_loaded = None; final_audio_loaded = None; video_with_combined_audio = None; video_ready_for_render = None
     try:
-        logger.info(f"--- STEP 1C: Combining Final Audio and Visual Tracks ---")
-        if not pathlib.Path(temp_final_visual_path).exists():
-            logger.error(f"Temporary visual file not found: {temp_final_visual_path}. Cannot combine.")
-            return
-        if not pathlib.Path(temp_final_audio_path).exists():
-            logger.error(f"Temporary audio file not found: {temp_final_audio_path}. Cannot combine.")
-            return
-
-        logger.info(f"Loading temporary visual track from: {temp_final_visual_path}")
+        if not temp_final_visual_path.exists() or not temp_final_audio_path.exists():
+            logger.error("Temp visual or audio for base video not found."); return None
         final_video_loaded = VideoFileClip(str(temp_final_visual_path))
-        logger.info(f"  Loaded temp visual: Duration {final_video_loaded.duration:.2f}s, FPS {final_video_loaded.fps}, Frames {int(final_video_loaded.duration * (final_video_loaded.fps or DEFAULT_TARGET_FPS_ASSEMBLY))}")
-
-        logger.info(f"Loading temporary audio track from: {temp_final_audio_path}")
         final_audio_loaded = AudioFileClip(str(temp_final_audio_path))
-        logger.info(f"  Loaded temp audio: Duration {final_audio_loaded.duration:.2f}s")
-
-        if not final_video_loaded or not final_audio_loaded:
-            logger.error("Failed to load temporary video or audio file. Cannot combine.")
-            # Resources will be closed in finally block
-            return
-
-        logger.info(f"Combining audio and video. Initial video duration: {final_video_loaded.duration:.2f}s, Audio duration from temp file: {final_audio_loaded.duration:.2f}s. Target duration (from pre-saved audio calc): {actual_final_audio_duration:.2f}s")
         video_with_audio_intermediate = final_video_loaded.set_audio(final_audio_loaded)
+        video_ready_for_render = video_with_audio_intermediate.set_duration(actual_final_audio_duration) # Use pre-calc audio duration
 
-        if not video_with_audio_intermediate:
-            logger.error("Failed to set audio on video_loaded. Cannot proceed.")
-            return # Resources will be closed in finally
-
-        # Explicitly set the duration of the combined clip to actual_final_audio_duration
-        # (calculated in Step 1A before writing temp audio) to ensure it's the source of truth.
-        logger.info(f"Ensuring final clip duration matches pre-calculated audio duration ({actual_final_audio_duration:.2f}s). Clip current duration after set_audio: {video_with_audio_intermediate.duration:.2f}s")
-        video_ready_for_render = video_with_audio_intermediate.set_duration(actual_final_audio_duration)
-
-        # Ensure FPS is set for the final render
         output_fps_final = video_ready_for_render.fps if hasattr(video_ready_for_render, 'fps') and video_ready_for_render.fps else DEFAULT_TARGET_FPS_ASSEMBLY
         if not hasattr(video_ready_for_render, 'fps') or video_ready_for_render.fps != output_fps_final:
-            logger.info(f"Setting/standardizing FPS of final render clip to {output_fps_final}fps.")
             video_ready_for_render = video_ready_for_render.set_fps(output_fps_final)
 
-        if not video_ready_for_render:
-            logger.error("Failed to set duration or FPS on the combined video. Cannot write final output.")
-            return # Resources will be closed in finally
+        if not video_ready_for_render: logger.error("Failed to prep base video for render."); return None
+        logger.info(f"Writing Step 1 (Base) video to: {final_output_path} (Dur: {video_ready_for_render.duration:.2f}s)")
+        video_ready_for_render.write_videofile(str(final_output_path), codec="libx264", audio_codec="aac", fps=output_fps_final, logger=None)
+        logger.info(f"Successfully assembled Step 1 (Base) video: {final_output_path}")
+        return str(final_output_path)
+    except Exception as e:
+        logger.error(f"Error combining base audio/video: {e}", exc_info=True); return None
+    finally:
+        for clip_obj in [final_video_loaded, final_audio_loaded, video_with_audio_intermediate, video_ready_for_render]:
+            if clip_obj and hasattr(clip_obj, 'close'):
+                try: clip_obj.close()
+                except Exception as e_close_final: logger.warning(f"Minor error closing final combination clip: {e_close_final}")
+        # Keep temp files for inspection for now, as per previous settings
+        # if temp_final_audio_path.exists(): temp_final_audio_path.unlink()
+        # if temp_final_visual_path.exists(): temp_final_visual_path.unlink()
 
-        total_frames_final = int(video_ready_for_render.duration * output_fps_final)
-        logger.info(f"Writing final combined video to: {final_output_path} (Final Duration: {video_ready_for_render.duration:.2f}s (set to pre-calc audio), FPS: {output_fps_final}, Total Frames: {total_frames_final})")
+# Placeholder for Step 2
+def apply_fx_to_video(input_video_path: str, output_dir_path: pathlib.Path, output_filename: str, scene_plans: list) -> str | None:
+    logger.info(f"--- STEP 2: Applying FX --- ")
+    logger.info(f"Input video for FX: {input_video_path}")
+    final_output_path = output_dir_path / output_filename
 
-        video_ready_for_render.write_videofile(
-            str(final_output_path),
-            codec="libx264",
-            audio_codec="aac",
-            fps=output_fps_final,
-            logger=None
-        )
-        logger.info(f"Successfully assembled video (Step 1 - Combined) saved to: {final_output_path}")
+    if not pathlib.Path(input_video_path).exists():
+        logger.error(f"Input video for FX not found: {input_video_path}")
+        return None
+
+    base_video_clip = None
+    processed_fx_clips = [] # To hold the generated FX TextClips
+    clips_to_composite = []
+
+    try:
+        base_video_clip = VideoFileClip(input_video_path)
+        clips_to_composite.append(base_video_clip) # Start with the base video
+
+        for scene_idx, scene in enumerate(scene_plans):
+            fx_suggestion = scene.get("fx_suggestion")
+            scene_id = scene.get("scene_id", f"scene_{scene_idx + 1}")
+
+            if fx_suggestion and isinstance(fx_suggestion, dict):
+                fx_type = fx_suggestion.get("type")
+                if fx_type == "TEXT_OVERLAY_FADE":
+                    logger.info(f"  Preparing FX: {fx_type} for scene {scene_id}")
+                    try:
+                        text_content = fx_suggestion.get("text_content", "Text FX")
+                        params = fx_suggestion.get("params", {})
+                        font_props_from_json = params.get("font_props", {})
+                        size_keyword = font_props_from_json.get("size", "default").lower()
+                        fontsize = FX_TEXT_SIZE_MAPPING.get(size_keyword, FX_TEXT_SIZE_MAPPING["default"])
+                        font_name = font_props_from_json.get("font", "Arial-Bold")
+                        pos_keyword = params.get("position", "center").lower()
+
+                        position_map = {
+                            "center": ("center", "center"), "top": ("center", "top"), "bottom": ("center", "bottom"),
+                            "top-left": ("left", "top"), "top-right": ("right", "top"),
+                            "bottom-left": ("left", "bottom"), "bottom-right": ("right", "bottom"),
+                        }
+                        text_position = position_map.get(pos_keyword, ("center", "center"))
+                        if isinstance(params.get("position"), tuple) and len(params.get("position")) == 2:
+                             text_position = params.get("position") # Allow direct tuple pass-through
+
+                        fx_font_props = {
+                            'font': font_name, 'fontsize': fontsize,
+                            'color': font_props_from_json.get("color", "white"),
+                        }
+
+                        scene_start_time = scene.get("start_time")
+                        scene_end_time = scene.get("end_time")
+
+                        if scene_start_time is None or scene_end_time is None:
+                            logger.warning(f"    Scene {scene_id} missing start/end times for FX. Skipping FX.")
+                            continue
+
+                        fx_clip_actual_duration = scene_end_time - scene_start_time
+                        if fx_clip_actual_duration <= 0:
+                            logger.warning(f"    Scene {scene_id} has zero or negative duration for FX ({fx_clip_actual_duration:.2f}s). Skipping FX.")
+                            continue
+
+                        # Ensure fade durations are reasonable for the FX clip's own duration
+                        fade_in = min(FX_DEFAULT_FADE_DURATION, fx_clip_actual_duration / 3)
+                        fade_out = min(FX_DEFAULT_FADE_DURATION, fx_clip_actual_duration / 3)
+
+                        fx_animation_clip = animate_text_fade(
+                            text_content=text_content,
+                            total_duration=fx_clip_actual_duration, # Duration of the FX itself
+                            screen_size=TIKTOK_DIMS,
+                            font_props=fx_font_props,
+                            position=text_position,
+                            fadein_duration=fade_in,
+                            fadeout_duration=fade_out,
+                            is_transparent=True
+                        )
+
+                        if fx_animation_clip:
+                            # Set the start time of this FX clip relative to the main video timeline
+                            fx_animation_clip = fx_animation_clip.set_start(scene_start_time)
+                            processed_fx_clips.append(fx_animation_clip)
+                            logger.info(f"    Successfully prepared FX for scene {scene_id} with text: '{text_content}', Start: {scene_start_time:.2f}s, Dur: {fx_clip_actual_duration:.2f}s")
+                        else:
+                            logger.warning(f"    Failed to generate {fx_type} for scene {scene_id}")
+                    except Exception as e_fx:
+                        logger.error(f"    Error applying FX {fx_type} for scene {scene_id}: {e_fx}", exc_info=True)
+                else:
+                    logger.info(f"  Skipping unknown FX type: {fx_type} for scene {scene_id}")
+
+        if not processed_fx_clips:
+            logger.info("No FX were prepared or applied. Copying input video to output for Step 2.")
+            if base_video_clip and hasattr(base_video_clip, 'close'): base_video_clip.close()
+            import shutil
+            shutil.copy(input_video_path, str(final_output_path))
+            return str(final_output_path)
+
+        # Add all prepared FX clips to the list for compositing
+        clips_to_composite.extend(processed_fx_clips)
+
+        # Create the final composite video with base video and all timed FX overlays
+        logger.info(f"Compositing base video with {len(processed_fx_clips)} FX clips.")
+        video_with_fx = CompositeVideoClip(clips_to_composite, size=TIKTOK_DIMS)
+        # Ensure the final duration is that of the base video, as FX are overlays
+        video_with_fx = video_with_fx.set_duration(base_video_clip.duration)
+        if base_video_clip.audio: # Preserve audio from base video
+            video_with_fx = video_with_fx.set_audio(base_video_clip.audio)
+
+        output_fps = video_with_fx.fps if hasattr(video_with_fx, 'fps') and video_with_fx.fps else DEFAULT_TARGET_FPS_ASSEMBLY
+        if not hasattr(video_with_fx, 'fps') or video_with_fx.fps != output_fps:
+            video_with_fx = video_with_fx.set_fps(output_fps)
+
+        logger.info(f"Writing Step 2 (FX) video to: {final_output_path} (Dur: {video_with_fx.duration:.2f}s, FPS: {output_fps})")
+        video_with_fx.write_videofile(str(final_output_path), codec="libx264", audio_codec="aac", fps=output_fps, logger=None)
+        logger.info(f"Successfully assembled Step 2 (FX) video: {final_output_path}")
+        return str(final_output_path)
 
     except Exception as e:
-        logger.error(f"Error combining final audio and video or writing final output: {e}", exc_info=True)
+        logger.error(f"Error during FX application (Step 2): {e}", exc_info=True)
+        return None
     finally:
-        logger.debug("Cleaning up clips from final combination step.")
-        if final_video_loaded and hasattr(final_video_loaded, 'close'): final_video_loaded.close()
-        if final_audio_loaded and hasattr(final_audio_loaded, 'close'): final_audio_loaded.close()
+        if base_video_clip and hasattr(base_video_clip, 'close'):
+            base_video_clip.close()
+        for fx_clip in processed_fx_clips: # These are the full animation clips
+            if hasattr(fx_clip, 'close'):
+                try: fx_clip.close()
+                except Exception as e_fx_close: logger.warning(f"Minor error closing FX animation clip: {e_fx_close}")
+        # If video_with_fx was created, it should also be closed.
+        # However, write_videofile usually closes the clip it writes. Let's be safe.
+        if 'video_with_fx' in locals() and locals()['video_with_fx'] and hasattr(locals()['video_with_fx'], 'close'):
+            try: locals()['video_with_fx'].close()
+            except Exception as e_final_fx_close: logger.warning(f"Minor error closing final video_with_fx: {e_final_fx_close}")
 
-        # Close intermediate composite clip if it exists and is different from final_video_loaded
-        if 'video_with_audio_intermediate' in locals() and video_with_audio_intermediate and hasattr(video_with_audio_intermediate, 'close') and video_with_audio_intermediate != final_video_loaded:
-            video_with_audio_intermediate.close()
-            logger.debug("Closed video_with_audio_intermediate.")
+def add_captions_to_video(input_video_path: str, output_dir_path: pathlib.Path, output_filename: str, transcription_data: list) -> str | None:
+    logger.info(f"--- STEP 3: Adding Captions --- ")
+    logger.info(f"Input video for Captions: {input_video_path}")
+    final_output_path = output_dir_path / output_filename
 
-        # Close the final clip that was rendered if it exists and is different from previously closed clips
-        if 'video_ready_for_render' in locals() and video_ready_for_render and hasattr(video_ready_for_render, 'close') and \
-           video_ready_for_render != final_video_loaded and \
-           (not 'video_with_audio_intermediate' in locals() or video_ready_for_render != video_with_audio_intermediate):
-            video_ready_for_render.close()
-            logger.debug("Closed video_ready_for_render.")
+    if not pathlib.Path(input_video_path).exists():
+        logger.error(f"Input video for captions not found: {input_video_path}")
+        return None
 
-        # DO NOT delete temp_final_audio_path and temp_final_visual_path for inspection
-        logger.info(f"Temporary audio file kept for inspection: {temp_final_audio_path}")
-        logger.info(f"Temporary visual file kept for inspection: {temp_final_visual_path}")
+    if not transcription_data:
+        logger.error("Transcription data is empty. Cannot add captions.")
+        return None
+
+    try:
+        logger.info(f"Calling add_captions_fx for {input_video_path}")
+        logger.info(f"Outputting captions to: {final_output_path}")
+
+        # Transform transcription_data into the structure expected by segment_parser
+        # segment_parser.parse expects a list of segments, where each segment has a "words" key.
+        # The e2e_transcription_output.json is a flat list of word objects.
+        # We'll treat the entire transcription as a single segment for captioning purposes here.
+        segments_for_parser = None
+        if transcription_data and isinstance(transcription_data, list) and \
+           all(isinstance(item, dict) and "word" in item for item in transcription_data):
+            segments_for_parser = [{"words": transcription_data}]
+            logger.info("Wrapped flat transcription data into a single segment for caption parser.")
+        else:
+            # If transcription_data is already in the correct segmented format or is problematic,
+            # pass it as is, or handle error.
+            logger.warning("Transcription data is not a flat list-of-words or is empty/None. Passing as is to add_captions_fx. This might be intended if data is pre-segmented.")
+            segments_for_parser = transcription_data
+
+        add_captions_fx(\
+            video_file=input_video_path,\
+            output_file=str(final_output_path), \
+            font=CAPTION_FONT, \
+            font_size=CAPTION_FONT_SIZE,\
+            font_color=CAPTION_FONT_COLOR,\
+            stroke_width=CAPTION_STROKE_WIDTH,\
+            stroke_color=CAPTION_STROKE_COLOR,\
+            highlight_current_word=CAPTION_HIGHLIGHT_WORD,\
+            word_highlight_color=CAPTION_WORD_HIGHLIGHT_COLOR,\
+            line_count=CAPTION_LINE_COUNT,\
+            padding=CAPTION_PADDING,\
+            position=CAPTION_POSITION, \
+            shadow_strength=CAPTION_SHADOW_STRENGTH,\
+            shadow_blur=CAPTION_SHADOW_BLUR,\
+            print_info=True, \
+            segments=segments_for_parser, \
+            use_local_whisper="false" \
+        )
+
+        logger.info(f"Successfully added captions. Output: {final_output_path}")
+        return str(final_output_path)
+
+    except FileNotFoundError as fnf_error: # Catch if font file is not found by add_captions_fx
+        logger.error(f"Error adding captions (font possibly not found by add_captions_fx): {fnf_error}", exc_info=True)
+        return None
+    except Exception as e:
+        logger.error(f"Error during caption addition (Step 3): {e}", exc_info=True)
+        return None
 
 
 if __name__ == '__main__':
-    input_summary_for_run = DEFAULT_INPUT_SUMMARY
-    transcription_file_for_run = DEFAULT_TRANSCRIPTION_PATH
-    if not input_summary_for_run.exists():
-        logger.warning(f"Input summary {input_summary_for_run} not found. Attempting fallback...")
-        input_summary_for_run = PROJECT_ROOT / "test_outputs" / "orchestration_summary_output.json"
-        if not input_summary_for_run.exists():
-            logger.error(f"Fallback input summary {input_summary_for_run} also not found. Please generate it first.")
-            exit(1)
-        else:
-            logger.info(f"Using fallback input summary: {input_summary_for_run}")
-    else:
-        logger.info(f"Using input summary: {input_summary_for_run}")
+    output_dir = pathlib.Path(DEFAULT_OUTPUT_DIR)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not transcription_file_for_run.exists():
-        logger.error(f"Transcription file {transcription_file_for_run} not found. Cannot proceed with gap filling that relies on transcription end time.")
+    summary_path = str(DEFAULT_INPUT_SUMMARY)
+    trans_path = str(DEFAULT_TRANSCRIPTION_PATH)
+
+    # --- To skip steps for testing ---
+    # 1. Ensure the output file from the PREVIOUS step exists in 'output_dir'
+    #    and is correctly named (e.g., OUTPUT_FILENAME_STEP1_BASE, OUTPUT_FILENAME_STEP2_FX).
+    # 2. Comment out the calls to the steps you want to skip.
+    # 3. The script will then use the existing file as input for the next active step.
+
+    # Example: To start directly at Step 3 (add_captions_to_video):
+    #   a) Ensure 'assembled_video_step1_base.mp4' (or your custom name for step 1 output) AND
+    #      'assembled_video_step2_fx.mp4' (or your custom name for step 2 output)
+    #      exist in the 'output_dir'.
+    #   b) Comment out the calls to 'assemble_video_step1_base_visuals_and_audio'
+    #      and 'apply_fx_to_video'.
+    #   c) The 'step2_output_path' variable will then point to the existing file,
+    #      which 'add_captions_to_video' will use as input.
+    #
+    step1_output_path_for_skipping = str(output_dir / OUTPUT_FILENAME_STEP1_BASE)
+    step2_output_path_for_skipping = str(output_dir / OUTPUT_FILENAME_STEP2_FX)
+
+    # Load scene_plans once for FX step if needed
+    scene_plans_for_fx = []
+    if pathlib.Path(summary_path).exists():
+        try:
+            with open(summary_path, 'r') as f: summary_data_main = json.load(f)
+            if isinstance(summary_data_main, dict):
+                scene_plans_for_fx = summary_data_main.get("scene_plans", [])
+            elif isinstance(summary_data_main, list):
+                scene_plans_for_fx = summary_data_main # older format
+        except Exception as e_main_load:
+            logger.error(f"Failed to load scene_plans for FX step from {summary_path}: {e_main_load}")
+
+    # Load transcription_data once for caption step
+    transcription_data_for_captions = []
+    if pathlib.Path(trans_path).exists():
+        try:
+            with open(trans_path, 'r') as f: transcription_data_for_captions = json.load(f)
+        except Exception as e_main_trans_load:
+             logger.error(f"Failed to load transcription data for caption step from {trans_path}: {e_main_trans_load}")
+
+
+    # Step 1: Assemble Base Video
+    # step1_output_path = assemble_video_step1_base_visuals_and_audio(
+    #     orchestration_summary_path=summary_path,
+    #     output_dir_path=output_dir,
+    #     output_filename=OUTPUT_FILENAME_STEP1_BASE,
+    #     transcription_path=trans_path
+    # )
+    # If skipping to Step 2, uncomment the line below and comment out the call above
+    step1_output_path = step1_output_path_for_skipping
+
+    if not step1_output_path or not pathlib.Path(step1_output_path).exists(): # Check if file exists
+        logger.error(f"Step 1 (Base Video Assembly) failed or output file '{step1_output_path}' not found. Exiting.")
         exit(1)
-    else:
-        logger.info(f"Using transcription file: {transcription_file_for_run}")
 
-    assemble_video_step1(
-        orchestration_summary_path=str(input_summary_for_run),
-        transcription_path=str(transcription_file_for_run)
+    # Step 2: Apply FX
+    step2_output_path = apply_fx_to_video(
+        input_video_path=step1_output_path,
+        output_dir_path=output_dir,
+        output_filename=OUTPUT_FILENAME_STEP2_FX,
+        scene_plans=scene_plans_for_fx
     )
+    # If skipping to Step 3, uncomment the line below and comment out the call above
+    # step2_output_path = step2_output_path_for_skipping
+
+    if not step2_output_path or not pathlib.Path(step2_output_path).exists(): # Check if file exists
+        logger.error(f"Step 2 (FX Application) failed or output file '{step2_output_path}' not found. Exiting.")
+        exit(1)
+
+    # Step 3: Add Captions
+    step3_output_path = add_captions_to_video(
+        input_video_path=step2_output_path,
+        output_dir_path=output_dir,
+        output_filename=OUTPUT_FILENAME_STEP3_FINAL,
+        transcription_data=transcription_data_for_captions # Pass transcription data
+    )
+
+    if not step3_output_path:
+        logger.error("Step 3 (Caption Addition) failed. Exiting.")
+        exit(1)
+
+    logger.info(f"Video assembly pipeline completed. Final output: {step3_output_path}")
