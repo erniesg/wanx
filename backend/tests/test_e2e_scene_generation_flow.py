@@ -272,7 +272,7 @@ class TestE2ESceneGenerationFlow(unittest.TestCase):
                     if duration <= photo_thresh: self.assertEqual(scene_plan["visual_type"], "STOCK_IMAGE")
                     else: self.assertEqual(scene_plan["visual_type"], "STOCK_VIDEO")
                 self.assertIsInstance(scene_plan["visual_keywords"], list)
-                self.assertGreaterEqual(len(scene_plan["visual_keywords"], 1))
+                self.assertGreaterEqual(len(scene_plan["visual_keywords"]), 1)
                 self.assertTrue(all(isinstance(kw, str) for kw in scene_plan["visual_keywords"]))
                 if scene_plan["fx_suggestion"] is not None:
                     self.assertIsInstance(scene_plan["fx_suggestion"], dict)

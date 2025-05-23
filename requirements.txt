@@ -6,8 +6,9 @@ dotenv # For loading ENVATO_USERNAME and ENVATO_PASSWORD
 pydantic
 # Added for slugifying keywords in URL paths for Envato client
 python-slugify
-openai-whisper
-PyYAML
-python-dotenv
-elevenlabs
-anthropic
+openai-whisper==20231117
+PyYAML==6.0.1
+python-dotenv==1.0.1
+elevenlabs==1.2.0
+anthropic==0.28.0
+pydub==0.25.1

@@ -1012,6 +1012,36 @@ async def handle_argil_webhook(request: Request, background_tasks: BackgroundTas
                 return JSONResponse(content={"status": "received", "message": "Invalid callback_id format"})
             job_id, segment_name = parts
 
+            # --- MODIFICATION START: Handle unknown job_id by creating a minimal entry ---
+            if job_id not in job_data:
+                logger.info(f"Argil webhook for new or externally managed job_id '{job_id}'. Creating minimal entry in job_data.")
+                job_data[job_id] = {
+                    "workflow_type": "argil_external", # Mark as externally triggered
+                    "job_id": job_id,
+                    "status": "processing_webhook", # Initial status upon first webhook
+                    "creation_time": datetime.now().isoformat(),
+                    "assets": {
+                        "segments": {}
+                    },
+                    "logs": [f"[{datetime.now().isoformat()}] First webhook received for external job. Parsed segment: {segment_name}"]
+                }
+                if job_id not in active_jobs: active_jobs[job_id] = [] # Ensure log list for active_jobs too
+                active_jobs[job_id].append(f"[{datetime.now().isoformat()}] First webhook for external job {job_id}, segment {segment_name}")
+
+            # Ensure segment entry exists
+            if "segments" not in job_data[job_id].get("assets", {}): # Should be created above if job_id was new
+                 job_data[job_id]["assets"]["segments"] = {}
+
+            if segment_name not in job_data[job_id]["assets"]["segments"]:
+                logger.info(f"Argil webhook for new segment '{segment_name}' within job_id '{job_id}'. Creating minimal segment entry.")
+                job_data[job_id]["assets"]["segments"][segment_name] = {
+                    "type": "argil", # Assume type based on webhook source
+                    "visual_status": "processing_webhook", # Initial status
+                    "argil_video_id": video_id, # Store video_id from current webhook
+                    "logs": [f"[{datetime.now().isoformat()}] First webhook received for this segment."]
+                }
+            # --- MODIFICATION END ---
+
             if job_id in job_data and job_data[job_id].get("assets", {}).get("segments", {}).get(segment_name):
                 # Ensure the segment type is Argil, though callback_id uniqueness should handle this
                 # if job_data[job_id]["assets"]["segments"][segment_name].get("type") != "argil":
@@ -1036,6 +1066,8 @@ async def handle_argil_webhook(request: Request, background_tasks: BackgroundTas
                     error_message = f"Argil video generation failed for videoId {video_id}. Event: {event_data.get('videoName', 'N/A')}"
                     segment_state["visual_status"] = "failed"
                     segment_state["error"] = error_message
+                    # Update video_id if it wasn't set at creation (e.g. first webhook for segment)
+                    segment_state["argil_video_id"] = video_id
                     logger.error(f"Argil Failure | Job: {job_id} | Segment: {segment_name} | Video ID: {video_id} | Message: {error_message}")
                     if job_id not in active_jobs: active_jobs[job_id] = []
                     active_jobs[job_id].append(f"[{datetime.now().isoformat()}] Error: Argil video failed for {segment_name}: {error_message}")
@@ -1055,7 +1087,7 @@ async def handle_argil_webhook(request: Request, background_tasks: BackgroundTas
                     logger.info(f"[{job_id}] Job not yet ready for assembly after Argil segment '{segment_name}' update.")
 
             else:
-                logger.error(f"Argil webhook received for unknown job_id '{job_id}' or segment_name '{segment_name}'. Callback ID: {callback_id_str}")
+                logger.error(f"Argil webhook received for job_id '{job_id}' segment_name '{segment_name}', but could not find/initialize state in job_data. Callback ID: {callback_id_str}")
 
         except Exception as e:
             logger.error(f"Error processing Argil callback_id {callback_id_str} or updating job state: {e}", exc_info=True)

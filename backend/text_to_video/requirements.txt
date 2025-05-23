@@ -21,3 +21,4 @@ playwright
 pytest
 pytest-asyncio
 python-slugify
+pydub

@@ -93,55 +93,90 @@ def create_argil_video_job(
     voice_id: str = DEFAULT_VOICE_ID,
     gesture_slugs: list[str] = None,
     aspect_ratio: str = "9:16",
-    callback_id: str = None # For potential future use or logging
+    callback_id: str = None,
+    moments_payload: list[dict] = None
 ) -> dict | None:
     """
     Creates a video generation job with Argil.
-    Splits transcript into moments and assigns gestures.
+    If moments_payload is provided, it's used directly.
+    Otherwise, splits full_transcript into moments and assigns gestures.
     """
     logger.info(f"Attempting to create Argil video job. Title: {video_title}, Callback ID: {callback_id}")
     if not api_key:
         logger.error("API key is missing for Argil.")
         return None
 
-    if gesture_slugs is None:
-        gesture_slugs = DEFAULT_GESTURE_SLUGS
-    if not gesture_slugs: # Ensure there's at least one gesture to avoid errors
-        logger.warning("No gesture slugs provided, using a default 'gesture-1'")
-        gesture_slugs = ["gesture-1"]
+    job_gesture_slugs = gesture_slugs if gesture_slugs is not None else DEFAULT_GESTURE_SLUGS
+    if not job_gesture_slugs:
+        logger.warning("No job-level gesture slugs provided or default, using a single 'gesture-1' for fallback if needed.")
+        job_gesture_slugs = ["gesture-1"]
 
-    transcript_chunks = split_transcript_text(full_transcript, TRANSCRIPT_CHAR_LIMIT)
-    if not transcript_chunks:
-        logger.error(f"Transcript splitting resulted in no chunks for title: {video_title}. Original transcript: '{full_transcript[:100]}...'")
-        return {"success": False, "error": "Transcript splitting failed", "details": "No chunks generated"}
+    default_single_gesture = job_gesture_slugs[0]
+
+    final_moments_payload = []
+
+    if moments_payload and len(moments_payload) > 0:
+        logger.info(f"Using provided moments_payload with {len(moments_payload)} moment(s).")
+        for idx, moment_data in enumerate(moments_payload):
+            # Ensure essential fields are present, falling back to job defaults
+            # Transcript is expected to be in moment_data if it's from orchestrator
+            if "transcript" not in moment_data or not moment_data["transcript"]:
+                 logger.warning(f"Moment {idx} in provided payload is missing 'transcript'. This might be okay if audioUrl is primary.")
+                 # Argil might require a transcript, even if short, when audioUrl is used.
+                 # Sending a space or the scene text as done by orchestrator.
+                 moment_data["transcript"] = moment_data.get("transcript", " ")
 
 
-    moments_payload = []
-    for i, chunk in enumerate(transcript_chunks):
-        gesture_slug = gesture_slugs[i % len(gesture_slugs)] # Cycle through gestures
-        moments_payload.append({
-            "transcript": chunk,
-            "avatarId": avatar_id,
-            "voiceId": voice_id,
-            "gestureSlug": gesture_slug,
-            # "zoom": {"level": 1} # Optional: add if needed
-        })
+            moment_data["avatarId"] = moment_data.get("avatarId", avatar_id) # Use moment's, else job's
+            moment_data["voiceId"] = moment_data.get("voiceId", voice_id)   # Use moment's, else job's
+
+            # If gestureSlug is missing in the provided moment, use the first job-level default gesture
+            if "gestureSlug" not in moment_data or not moment_data["gestureSlug"]:
+                moment_data["gestureSlug"] = default_single_gesture
+                logger.debug(f"Moment {idx} in payload missing gestureSlug, assigned default: {default_single_gesture}")
+
+            # audioUrl if present in moment_data is used directly.
+            if "audioUrl" in moment_data:
+                logger.info(f"Moment {idx} includes audioUrl: {moment_data['audioUrl']}")
+
+            final_moments_payload.append(moment_data)
+    else:
+        logger.info("No moments_payload provided, or it's empty. Splitting full_transcript.")
+        if not full_transcript:
+            logger.error(f"full_transcript is empty and no moments_payload provided for title: {video_title}.")
+            return {"success": False, "error": "Transcript missing and no moments_payload", "details": "Cannot create job without content."}
+
+        transcript_chunks = split_transcript_text(full_transcript, TRANSCRIPT_CHAR_LIMIT)
+        if not transcript_chunks:
+            logger.error(f"Transcript splitting resulted in no chunks for title: {video_title}. Original: '{full_transcript[:100]}...'")
+            return {"success": False, "error": "Transcript splitting failed", "details": "No chunks generated"}
+
+        for i, chunk in enumerate(transcript_chunks):
+            assigned_gesture_slug = job_gesture_slugs[i % len(job_gesture_slugs)] # Cycle through job_gesture_slugs
+            final_moments_payload.append({
+                "transcript": chunk,
+                "avatarId": avatar_id, # Job-level avatar
+                "voiceId": voice_id,   # Job-level voice
+                "gestureSlug": assigned_gesture_slug,
+            })
+        logger.info(f"Created {len(final_moments_payload)} moments from full_transcript.")
+
+    if not final_moments_payload:
+        logger.error(f"No moments could be prepared for Argil job: {video_title}")
+        return {"success": False, "error": "No moments generated", "details": "Payload construction failed."}
 
     payload = {
         "name": video_title,
-        "moments": moments_payload,
-        "subtitles": {"enable": False},  # Captions handled separately
+        "moments": final_moments_payload,
+        "subtitles": {"enable": False},
         "aspectRatio": aspect_ratio,
-        # "autoBrolls": {"enable": False, "source": "AVATAR_ACTION"}, # Removed as we want B-rolls disabled
-        # "backgroundMusic": {} # Music handled separately
         "extras": {}
     }
     if callback_id:
         payload["extras"]["callback_id"] = callback_id
 
-
     url = f"{BASE_URL}/videos"
-    logger.debug(f"Argil create_video_job payload: {payload}")
+    logger.debug(f"Argil create_video_job final payload: {payload}")
     try:
         response = requests.post(url, headers=_get_headers(api_key), json=payload, timeout=30)
         response.raise_for_status()
@@ -163,9 +198,9 @@ def create_argil_video_job(
         if e.response is not None:
             status_code = e.response.status_code
             try:
-                error_details = e.response.json() # Try to parse JSON error
+                error_details = e.response.json()
             except ValueError:
-                error_details = e.response.text # Fallback to text
+                error_details = e.response.text
             logger.error(f"Response status: {status_code}, content: {error_details}")
         return {"success": False, "error": str(e), "status_code": status_code, "details": error_details}
     except Exception as e:
@@ -359,105 +394,90 @@ if __name__ == "__main__":
             else:
                 print("Skipping creation as a suitable test webhook already exists.")
 
-        # --- Original Video Generation Test ---
-        test_video_title = f"Argil Client Test {uuid.uuid4()}"
-
-        # Test script that is intentionally long and has multiple sentences.
-        test_script = (
+        # --- Video Generation Test ---
+        test_video_title_default_split = f"Argil Client Test Default Split {uuid.uuid4()}"
+        test_script_long = (
             "This is the first sentence of our test script. It's designed to be significantly longer than 250 characters to properly "
-            "evaluate if the transcript splitting mechanism works as intended when faced with lengthy input. Let's add some more verbose "
-            "text here to make absolutely sure we cross that critical threshold by a good margin. Argil's API has specific character limits "
-            "per moment, so ensuring this functionality is robust is absolutely crucial for reliable video generation. This is the second major part "
-            "of the script, which will also be split. We are currently testing the client library specifically developed for interacting with "
-            "the Argil platform, which is intended to handle various aspects of the video creation process including, but not limited to, "
-            "initial job submission, the rendering phase, and periodic status polling to check for completion or failure. Each distinct segment "
-            "of the overall script will eventually become an individual 'moment' within the Argil payload structure. We have the capability "
-            "to assign different or specific gestures to each of these moments, or alternatively, we can cycle through a predefined list of "
-            "available gestures for variety. The ultimate goal is to achieve seamless and effective integration with the existing video workflow. "
-            "This is a final concluding sentence for this comprehensive test, ensuring that all edge cases and splitting scenarios are "
-            "thoroughly covered before deployment."
+            "evaluate if the transcript splitting mechanism works as intended when faced with lengthy input. This is sentence two. This is sentence three, let's make it a bit longer to test more splitting cases."
         )
-        short_test_script = "This is a short script. It should not be split." # Example of a short script
+        test_callback_id_1 = f"argil_job_test_split_{uuid.uuid4()}"
 
-        test_callback_id = f"argil_job_test_{uuid.uuid4()}" # Unique ID for job tracking via extras
-
-        print(f"\n--- Test 1: Create Argil Video Job ---")
-        print(f"Video Title: {test_video_title}")
-        print(f"Avatar ID: {DEFAULT_AVATAR_ID}")
-        print(f"Voice ID: {DEFAULT_VOICE_ID}")
-        print(f"Callback ID (Extras): {test_callback_id}")
-
-        # Using the long script for testing splitting
-        creation_response = create_argil_video_job(
+        print(f"\n--- Test 1: Create Argil Video Job (Default Transcript Splitting) ---")
+        print(f"Video Title: {test_video_title_default_split}")
+        creation_response_split = create_argil_video_job(
             api_key=argil_api_key,
-            video_title=test_video_title,
-            full_transcript=test_script,
-            avatar_id=DEFAULT_AVATAR_ID,
-            voice_id=DEFAULT_VOICE_ID,
-            aspect_ratio="9:16", # or "16:9"
-            callback_id=test_callback_id # This will be placed in payload.extras.callback_id
+            video_title=test_video_title_default_split,
+            full_transcript=test_script_long, # This will be split
+            # avatar_id, voice_id, gesture_slugs will use defaults
+            callback_id=test_callback_id_1
         )
 
-        if creation_response and creation_response.get("success"):
-            test_video_id = creation_response.get("video_id")
-            print(f"Successfully initiated video creation. Video ID: {test_video_id}")
-            # print(f"Full creation response data: {creation_response.get('data')}") # Can be verbose
-
-            print(f"\n--- Test 2: Render Argil Video ---")
-            render_response = render_argil_video(argil_api_key, test_video_id)
-
-            if render_response and render_response.get("success"):
-                print(f"Successfully requested video rendering for ID: {test_video_id}")
-                # print(f"Initial render status data: {render_response.get('data')}")
-
-                print(f"\n--- Test 3: Poll for Video Status (if webhook not used/for immediate feedback) ---")
-                print("(Note: In a real scenario, we'd primarily rely on webhooks for completion notification)")
-                max_checks = 10  # Check every 30s for 5 mins
-                check_interval = 30  # seconds
-                video_done_or_failed = False
-
-                for i in range(max_checks):
-                    print(f"Polling attempt {i+1}/{max_checks}...")
-                    status_details_response = get_argil_video_details(argil_api_key, test_video_id)
-
-                    if status_details_response and status_details_response.get("success"):
-                        video_data = status_details_response.get("data", {})
-                        current_status = video_data.get("status")
-                        print(f"Current video status: {current_status}")
-
-                        if current_status == "DONE":
-                            print("Video generation complete!")
-                            print(f"Video URL: {video_data.get('videoUrl')}")
-                            # print(f"Subtitled URL: {video_data.get('videoUrlSubtitled')}") # Argil provides this
-                            # print(f"Full video data: {video_data}")
-                            video_done_or_failed = True
-                            break
-                        elif current_status == "FAILED":
-                            print("Video generation failed.")
-                            print(f"Failure reason: {video_data.get('failureReason') or video_data}")
-                            video_done_or_failed = True
-                            break
-                        elif current_status in ["PENDING", "PROCESSING", "RENDERING", "UPLOADING_ASSETS", "GENERATING_VIDEO", "GENERATING_AUDIO"]:
-                            print(f"Video is still processing ({current_status}). Waiting {check_interval}s...")
-                            time.sleep(check_interval)
-                        else: # Unknown status
-                            logger.warning(f"Unknown video status encountered: {current_status}. Waiting {check_interval}s...")
-                            time.sleep(check_interval)
-                    else:
-                        err_msg = status_details_response.get('error') if status_details_response else 'No response'
-                        details_msg = status_details_response.get('details') if status_details_response else ''
-                        print(f"Failed to get video status: {err_msg}. Details: {details_msg}")
-                        time.sleep(check_interval)
-
-                if not video_done_or_failed:
-                    print("Video did not complete or fail within the polling time. Please check Argil dashboard or logs for Video ID:", test_video_id)
-            else:
-                err_msg = render_response.get('error') if render_response else 'No response'
-                details_msg = render_response.get('details') if render_response else ''
-                print(f"Failed to render video. Error: {err_msg}. Details: {details_msg}")
+        if creation_response_split and creation_response_split.get("success"):
+            test_video_id_split = creation_response_split.get("video_id")
+            print(f"Successfully initiated video (split transcript). Video ID: {test_video_id_split}")
+            # No rendering here to keep test faster and focused on creation logic
         else:
-            err_msg = creation_response.get('error') if creation_response else 'No response'
-            details_msg = creation_response.get('details') if creation_response else ''
-            print(f"Failed to create video. Error: {err_msg}. Details: {details_msg}")
+            err_msg = creation_response_split.get('error') if creation_response_split else 'No response'
+            details_msg = creation_response_split.get('details') if creation_response_split else ''
+            print(f"Failed to create video (split transcript). Error: {err_msg}. Details: {details_msg}")
+
+        # --- Test 2: Create Argil Video Job (Using Predefined moments_payload) ---
+        test_video_title_payload = f"Argil Client Test MomentsPayload {uuid.uuid4()}"
+        test_callback_id_2 = f"argil_job_test_payload_{uuid.uuid4()}"
+
+        # Example moments_payload (e.g., from asset_orchestrator.py)
+        # For a real test with audioUrl, you'd need a live S3 URL with a short audio clip.
+        # For this client unit test, we'll simulate the structure.
+        example_audio_url = "https://example.com/fake_audio.mp3" # Placeholder
+
+        predefined_moments = [
+            {
+                "transcript": "This is moment 1 from a predefined payload. It uses a specific audio.",
+                # "avatarId": "some_specific_avatar_id", # Optional: override job-level avatar
+                # "voiceId": "some_specific_voice_id",   # Optional: override job-level voice (for Argil TTS)
+                "gestureSlug": "gesture-3", # Explicitly set gesture
+                "audioUrl": example_audio_url
+            },
+            {
+                "transcript": "This is moment 2. No audioUrl, so Argil would TTS this if it were the only moment type.",
+                "avatarId": DEFAULT_AVATAR_ID, # Using default for variety
+                "gestureSlug": "gesture-5"  # Different gesture
+            },
+            {
+                # Moment missing some fields, to test defaults application
+                "transcript": "Moment 3, minimal data. Will use job defaults for avatar/voice/gesture."
+            }
+        ]
+
+        print(f"\n--- Test 2: Create Argil Video Job (Predefined moments_payload) ---")
+        print(f"Video Title: {test_video_title_payload}")
+        creation_response_payload = create_argil_video_job(
+            api_key=argil_api_key,
+            video_title=test_video_title_payload,
+            full_transcript="This is a fallback transcript, should ideally not be used if moments_payload is valid.", # Fallback
+            moments_payload=predefined_moments, # <<<< Passing predefined moments
+            avatar_id="job_level_avatar_if_moment_lacks_it", # Job level default avatar
+            voice_id="job_level_voice_if_moment_lacks_it",   # Job level default voice (for Argil TTS)
+            # gesture_slugs (job-level) will provide default_single_gesture if a moment lacks gestureSlug
+            callback_id=test_callback_id_2
+        )
+
+        if creation_response_payload and creation_response_payload.get("success"):
+            test_video_id_payload = creation_response_payload.get("video_id")
+            print(f"Successfully initiated video (moments_payload). Video ID: {test_video_id_payload}")
+            # Further steps like rendering and polling could be tested here too,
+            # but would make the test longer and require live audio URLs for full validation.
+            # The focus here is on the job creation logic with moments_payload.
+        else:
+            err_msg = creation_response_payload.get('error') if creation_response_payload else 'No response'
+            details_msg = creation_response_payload.get('details') if creation_response_payload else ''
+            print(f"Failed to create video (moments_payload). Error: {err_msg}. Details: {details_msg}")
+            if creation_response_payload:
+                print(f"Full response details: {creation_response_payload.get('details')}")
+
+
+        # The original polling test logic can be adapted if needed for one of these video IDs.
+        # For brevity, focusing on the creation logic differences here.
+        # ... (original polling test logic if you want to reinstate it for one of the IDs) ...
 
         print("\nArgil client test finished.")
