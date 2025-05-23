@@ -8,6 +8,8 @@ import json
 import pathlib
 import logging
 import tempfile # Added for temporary audio/video files
+import yaml # Added for loading config
+import shutil # Added for cleaning up temp step files
 from moviepy.editor import (
     concatenate_videoclips, AudioFileClip, VideoFileClip, VideoClip, CompositeVideoClip, ImageClip,
     concatenate_audioclips, CompositeAudioClip, TextClip # Added TextClip for potential future use
@@ -18,8 +20,8 @@ from moviepy.editor import (
 from backend.video_pipeline.video_utils import (
     process_image_to_video_clip,
     process_video_clip,
-    TIKTOK_DIMS,
-    DEFAULT_FPS
+    # TIKTOK_DIMS, # Removed, will load from config
+    # DEFAULT_FPS # Removed, will load from config
 )
 from backend.text_to_video.fx.text_animations import animate_text_fade # For FX
 from backend.text_to_video.fx import add_captions as add_captions_fx # For captions step
@@ -29,6 +31,25 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+CONFIG_FILE_PATH = PROJECT_ROOT / "backend" / "tests" / "test_config.yaml" # Path to the config
+
+# Load config for FPS and Dimensions
+def load_assembly_config():
+    if not CONFIG_FILE_PATH.exists():
+        # Fallback for critical parameters if config is missing, though this should not happen in a normal run
+        logger.error(f"Config file not found at {CONFIG_FILE_PATH}. Using emergency fallbacks for FPS/Dimensions.")
+        return {"video_general": {"TARGET_FPS": 30, "TARGET_DIMENSIONS": [1080, 1920]}}
+    with open(CONFIG_FILE_PATH, 'r') as f:
+        return yaml.safe_load(f)
+
+assembly_config_data = load_assembly_config()
+VIDEO_CONFIG = assembly_config_data.get("video_general", {})
+TARGET_FPS = VIDEO_CONFIG.get("TARGET_FPS", 30) # Default to 30 if not in config
+TARGET_DIMENSIONS = tuple(VIDEO_CONFIG.get("TARGET_DIMENSIONS", [1080, 1920])) # Default if not in config
+if len(TARGET_DIMENSIONS) != 2:
+    logger.warning(f"TARGET_DIMENSIONS from config is not a pair: {TARGET_DIMENSIONS}. Using default [1080, 1920].")
+    TARGET_DIMENSIONS = (1080, 1920)
+
 DEFAULT_INPUT_SUMMARY = PROJECT_ROOT / "test_outputs" / "orchestration_summary_updated_by_assembler_test.json"
 # Fallback if the assembler test hasn't created the "updated" one
 if not DEFAULT_INPUT_SUMMARY.exists():
@@ -46,8 +67,8 @@ OUTPUT_FILENAME_STEP1_BASE = "assembled_video_step1_base.mp4"
 OUTPUT_FILENAME_STEP2_FX = "assembled_video_step2_fx.mp4"
 OUTPUT_FILENAME_STEP3_FINAL = "assembled_video_step3_final.mp4"
 
-TIKTOK_ASPECT_RATIO = TIKTOK_DIMS[0] / TIKTOK_DIMS[1]
-DEFAULT_TARGET_FPS_ASSEMBLY = 24 # Consistent FPS for assembly output
+# TIKTOK_ASPECT_RATIO = TIKTOK_DIMS[0] / TIKTOK_DIMS[1] # Will use TARGET_DIMENSIONS
+# DEFAULT_TARGET_FPS_ASSEMBLY = 24 # Consistent FPS for assembly output - Will use TARGET_FPS
 
 # FX Configuration
 FX_TEXT_SIZE_MAPPING = {
@@ -107,10 +128,10 @@ def debug_single_scene(scene_id_to_debug: str, orchestration_summary_path: str):
 
     if visual_type == "STOCK_IMAGE":
         asset_path_str = target_scene.get("image_asset_path")
-        processed_clip = process_image_to_video_clip(asset_path_str, scene_duration, TIKTOK_DIMS, fps=DEFAULT_TARGET_FPS_ASSEMBLY)
+        processed_clip = process_image_to_video_clip(asset_path_str, scene_duration, TARGET_DIMENSIONS, fps=TARGET_FPS)
     elif visual_type in ["STOCK_VIDEO", "AVATAR"]:
         asset_path_str = target_scene.get("video_asset_path") or target_scene.get("avatar_video_path")
-        processed_clip = process_video_clip(asset_path_str, scene_duration, TIKTOK_DIMS, target_fps=DEFAULT_TARGET_FPS_ASSEMBLY)
+        processed_clip = process_video_clip(asset_path_str, scene_duration, TARGET_DIMENSIONS, target_fps=TARGET_FPS)
     else:
         logger.error(f"Unknown visual type for scene {scene_id_to_debug}")
         return
@@ -121,7 +142,7 @@ def debug_single_scene(scene_id_to_debug: str, orchestration_summary_path: str):
         debug_output_path = debug_output_dir / f"debugged_{scene_id_to_debug}_{pathlib.Path(asset_path_str).name}"
         logger.info(f"Writing debug clip for scene {scene_id_to_debug} to: {debug_output_path}")
         try:
-            processed_clip.write_videofile(str(debug_output_path), codec="libx264", audio_codec="aac", fps=processed_clip.fps or DEFAULT_TARGET_FPS_ASSEMBLY, logger=None) # Changed logger
+            processed_clip.write_videofile(str(debug_output_path), codec="libx264", audio_codec="aac", fps=processed_clip.fps or TARGET_FPS, logger=None) # Changed logger
             logger.info(f"Debug clip saved: {debug_output_path}. Please check if it plays correctly.")
         except Exception as e:
             logger.error(f"Error writing debug clip for scene {scene_id_to_debug}: {e}")
@@ -134,7 +155,9 @@ def assemble_video_step1_base_visuals_and_audio(
     orchestration_summary_path: str,
     output_dir_path: pathlib.Path, # Changed to pathlib.Path
     output_filename: str,
-    transcription_path: str
+    transcription_path: str,
+    target_fps: int, # Added
+    target_dims: tuple[int, int] # Added
 ) -> str | None: # Returns path to the generated video or None on failure
     """
     Step 1: Assembles base video with concatenated visuals and final audio (VO + BG music).
@@ -233,9 +256,9 @@ def assemble_video_step1_base_visuals_and_audio(
 
         processed_clip = None
         if visual_type == "STOCK_IMAGE":
-            processed_clip = process_image_to_video_clip(asset_path_str, duration_for_this_clip_processing, TIKTOK_DIMS, fps=DEFAULT_TARGET_FPS_ASSEMBLY)
+            processed_clip = process_image_to_video_clip(asset_path_str, duration_for_this_clip_processing, target_dims, fps=target_fps)
         else:
-            processed_clip = process_video_clip(asset_path_str, duration_for_this_clip_processing, TIKTOK_DIMS, target_fps=DEFAULT_TARGET_FPS_ASSEMBLY)
+            processed_clip = process_video_clip(asset_path_str, duration_for_this_clip_processing, target_dims, target_fps=target_fps)
 
         if processed_clip:
             if processed_clip.duration is None or processed_clip.duration < 0.01: # Check duration
@@ -244,7 +267,7 @@ def assemble_video_step1_base_visuals_and_audio(
 
             processed_clip = processed_clip.set_audio(None) # Ensure silent
             source_clips_for_visual_track.append(processed_clip)
-            clip_fps = processed_clip.fps if hasattr(processed_clip, 'fps') and processed_clip.fps else DEFAULT_TARGET_FPS_ASSEMBLY
+            clip_fps = processed_clip.fps if hasattr(processed_clip, 'fps') and processed_clip.fps else target_fps
             num_frames = int(processed_clip.duration * clip_fps) if processed_clip.duration else 0
             logger.info(f"  Successfully processed scene {scene.get('scene_id', i+1)}. Actual clip duration: {processed_clip.duration:.2f}s, FPS: {clip_fps}, Frames: {num_frames}")
         else:
@@ -271,8 +294,8 @@ def assemble_video_step1_base_visuals_and_audio(
     try:
         final_visual_track = concatenate_videoclips(source_clips_for_visual_track, method="compose")
         if not final_visual_track: logger.error("concatenate_videoclips returned None."); return None # Clean up handled by finally
-        if final_visual_track.fps is None or final_visual_track.fps != DEFAULT_TARGET_FPS_ASSEMBLY:
-            final_visual_track = final_visual_track.set_fps(DEFAULT_TARGET_FPS_ASSEMBLY)
+        if final_visual_track.fps is None or final_visual_track.fps != target_fps:
+            final_visual_track = final_visual_track.set_fps(target_fps)
         logger.info(f"Base visual track concatenated. Duration: {final_visual_track.duration:.2f}s, FPS: {final_visual_track.fps}")
     except Exception as e: logger.error(f"Error concatenating video clips: {e}"); return None # Clean up handled by finally
 
@@ -323,7 +346,7 @@ def assemble_video_step1_base_visuals_and_audio(
         if abs(final_visual_track.duration - target_visual_duration) > 0.01:
             final_visual_track = final_visual_track.set_duration(target_visual_duration)
         final_visual_track_silent = final_visual_track.without_audio()
-        output_fps = final_visual_track_silent.fps or DEFAULT_TARGET_FPS_ASSEMBLY
+        output_fps = final_visual_track_silent.fps or target_fps
         logger.info(f"Writing base silent visual to {temp_final_visual_path} (Dur: {final_visual_track_silent.duration:.2f}s, FPS: {output_fps})")
         final_visual_track_silent.write_videofile(str(temp_final_visual_path), codec="libx264", audio=False, fps=output_fps, logger=None)
     except Exception as e: logger.error(f"Error writing base silent visual: {e}"); return None
@@ -346,7 +369,7 @@ def assemble_video_step1_base_visuals_and_audio(
         video_with_audio_intermediate = final_video_loaded.set_audio(final_audio_loaded)
         video_ready_for_render = video_with_audio_intermediate.set_duration(actual_final_audio_duration) # Use pre-calc audio duration
 
-        output_fps_final = video_ready_for_render.fps if hasattr(video_ready_for_render, 'fps') and video_ready_for_render.fps else DEFAULT_TARGET_FPS_ASSEMBLY
+        output_fps_final = video_ready_for_render.fps if hasattr(video_ready_for_render, 'fps') and video_ready_for_render.fps else target_fps
         if not hasattr(video_ready_for_render, 'fps') or video_ready_for_render.fps != output_fps_final:
             video_ready_for_render = video_ready_for_render.set_fps(output_fps_final)
 
@@ -367,7 +390,7 @@ def assemble_video_step1_base_visuals_and_audio(
         # if temp_final_visual_path.exists(): temp_final_visual_path.unlink()
 
 # Placeholder for Step 2
-def apply_fx_to_video(input_video_path: str, output_dir_path: pathlib.Path, output_filename: str, scene_plans: list) -> str | None:
+def apply_fx_to_video(input_video_path: str, output_dir_path: pathlib.Path, output_filename: str, scene_plans: list, target_fps: int, target_dims: tuple[int, int]) -> str | None: # Added target_fps and target_dims
     logger.info(f"--- STEP 2: Applying FX --- ")
     logger.info(f"Input video for FX: {input_video_path}")
     final_output_path = output_dir_path / output_filename
@@ -434,7 +457,7 @@ def apply_fx_to_video(input_video_path: str, output_dir_path: pathlib.Path, outp
                         fx_animation_clip = animate_text_fade(
                             text_content=text_content,
                             total_duration=fx_clip_actual_duration, # Duration of the FX itself
-                            screen_size=TIKTOK_DIMS,
+                            screen_size=target_dims, # Use target_dims
                             font_props=fx_font_props,
                             position=text_position,
                             fadein_duration=fade_in,
@@ -466,13 +489,13 @@ def apply_fx_to_video(input_video_path: str, output_dir_path: pathlib.Path, outp
 
         # Create the final composite video with base video and all timed FX overlays
         logger.info(f"Compositing base video with {len(processed_fx_clips)} FX clips.")
-        video_with_fx = CompositeVideoClip(clips_to_composite, size=TIKTOK_DIMS)
+        video_with_fx = CompositeVideoClip(clips_to_composite, size=target_dims) # Use target_dims
         # Ensure the final duration is that of the base video, as FX are overlays
         video_with_fx = video_with_fx.set_duration(base_video_clip.duration)
         if base_video_clip.audio: # Preserve audio from base video
             video_with_fx = video_with_fx.set_audio(base_video_clip.audio)
 
-        output_fps = video_with_fx.fps if hasattr(video_with_fx, 'fps') and video_with_fx.fps else DEFAULT_TARGET_FPS_ASSEMBLY
+        output_fps = video_with_fx.fps if hasattr(video_with_fx, 'fps') and video_with_fx.fps else target_fps
         if not hasattr(video_with_fx, 'fps') or video_with_fx.fps != output_fps:
             video_with_fx = video_with_fx.set_fps(output_fps)
 
@@ -560,90 +583,133 @@ def add_captions_to_video(input_video_path: str, output_dir_path: pathlib.Path, 
         return None
 
 
-if __name__ == '__main__':
-    output_dir = pathlib.Path(DEFAULT_OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
+def assemble_final_video(
+    orchestration_summary_path_str: str,
+    transcription_path_str: str,
+    final_output_dir: pathlib.Path, # Main output directory for the run (e.g. video_outputs/byd/)
+    final_video_filename: str,      # Just the filename (e.g. byd_final_video.mp4)
+    target_fps: int,
+    target_dims: tuple[int, int]
+) -> str | None:
+    logger.info(f"===== STARTING FINAL VIDEO ASSEMBLY PROCESS ====")
+    final_output_dir.mkdir(parents=True, exist_ok=True)
 
-    summary_path = str(DEFAULT_INPUT_SUMMARY)
-    trans_path = str(DEFAULT_TRANSCRIPTION_PATH)
+    # Define filenames for intermediate step outputs within the final_output_dir
+    step1_base_filename = "_temp_step1_base_video.mp4"
+    step2_fx_filename = "_temp_step2_fx_video.mp4"
 
-    # --- To skip steps for testing ---
-    # 1. Ensure the output file from the PREVIOUS step exists in 'output_dir'
-    #    and is correctly named (e.g., OUTPUT_FILENAME_STEP1_BASE, OUTPUT_FILENAME_STEP2_FX).
-    # 2. Comment out the calls to the steps you want to skip.
-    # 3. The script will then use the existing file as input for the next active step.
-
-    # Example: To start directly at Step 3 (add_captions_to_video):
-    #   a) Ensure 'assembled_video_step1_base.mp4' (or your custom name for step 1 output) AND
-    #      'assembled_video_step2_fx.mp4' (or your custom name for step 2 output)
-    #      exist in the 'output_dir'.
-    #   b) Comment out the calls to 'assemble_video_step1_base_visuals_and_audio'
-    #      and 'apply_fx_to_video'.
-    #   c) The 'step2_output_path' variable will then point to the existing file,
-    #      which 'add_captions_to_video' will use as input.
-    #
-    step1_output_path_for_skipping = str(output_dir / OUTPUT_FILENAME_STEP1_BASE)
-    step2_output_path_for_skipping = str(output_dir / OUTPUT_FILENAME_STEP2_FX)
-
-    # Load scene_plans once for FX step if needed
+    # Load scene_plans from orchestration_summary for FX step
     scene_plans_for_fx = []
-    if pathlib.Path(summary_path).exists():
-        try:
-            with open(summary_path, 'r') as f: summary_data_main = json.load(f)
-            if isinstance(summary_data_main, dict):
-                scene_plans_for_fx = summary_data_main.get("scene_plans", [])
-            elif isinstance(summary_data_main, list):
-                scene_plans_for_fx = summary_data_main # older format
-        except Exception as e_main_load:
-            logger.error(f"Failed to load scene_plans for FX step from {summary_path}: {e_main_load}")
+    try:
+        with open(orchestration_summary_path_str, 'r') as f: summary_data_main = json.load(f)
+        scene_plans_for_fx = summary_data_main.get("scene_plans", [])
+    except Exception as e:
+        logger.error(f"Failed to load scene_plans from {orchestration_summary_path_str} for FX step: {e}")
+        return None # Cannot proceed without scene plans if FX are intended
 
-    # Load transcription_data once for caption step
+    # Load transcription_data for caption step
     transcription_data_for_captions = []
-    if pathlib.Path(trans_path).exists():
-        try:
-            with open(trans_path, 'r') as f: transcription_data_for_captions = json.load(f)
-        except Exception as e_main_trans_load:
-             logger.error(f"Failed to load transcription data for caption step from {trans_path}: {e_main_trans_load}")
-
+    try:
+        with open(transcription_path_str, 'r') as f: transcription_data_for_captions = json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load transcription data from {transcription_path_str} for caption step: {e}")
+        return None # Cannot proceed without transcription for captions
 
     # Step 1: Assemble Base Video
-    # step1_output_path = assemble_video_step1_base_visuals_and_audio(
-    #     orchestration_summary_path=summary_path,
-    #     output_dir_path=output_dir,
-    #     output_filename=OUTPUT_FILENAME_STEP1_BASE,
-    #     transcription_path=trans_path
-    # )
-    # If skipping to Step 2, uncomment the line below and comment out the call above
-    step1_output_path = step1_output_path_for_skipping
-
-    if not step1_output_path or not pathlib.Path(step1_output_path).exists(): # Check if file exists
-        logger.error(f"Step 1 (Base Video Assembly) failed or output file '{step1_output_path}' not found. Exiting.")
-        exit(1)
+    step1_output_path = assemble_video_step1_base_visuals_and_audio(
+        orchestration_summary_path=orchestration_summary_path_str,
+        output_dir_path=final_output_dir, # Step 1 writes its output here
+        output_filename=step1_base_filename,
+        transcription_path=transcription_path_str,
+        target_fps=target_fps,
+        target_dims=target_dims
+    )
+    if not step1_output_path or not pathlib.Path(step1_output_path).exists():
+        logger.error(f"Step 1 (Base Video Assembly) failed or output file not found. Exiting.")
+        return None
 
     # Step 2: Apply FX
     step2_output_path = apply_fx_to_video(
         input_video_path=step1_output_path,
-        output_dir_path=output_dir,
-        output_filename=OUTPUT_FILENAME_STEP2_FX,
-        scene_plans=scene_plans_for_fx
+        output_dir_path=final_output_dir, # Step 2 writes its output here
+        output_filename=step2_fx_filename,
+        scene_plans=scene_plans_for_fx,
+        target_fps=target_fps,
+        target_dims=target_dims
     )
-    # If skipping to Step 3, uncomment the line below and comment out the call above
-    # step2_output_path = step2_output_path_for_skipping
+    if not step2_output_path or not pathlib.Path(step2_output_path).exists():
+        logger.error(f"Step 2 (FX Application) failed or output file not found. Exiting.")
+        return None
 
-    if not step2_output_path or not pathlib.Path(step2_output_path).exists(): # Check if file exists
-        logger.error(f"Step 2 (FX Application) failed or output file '{step2_output_path}' not found. Exiting.")
-        exit(1)
-
-    # Step 3: Add Captions
+    # Step 3: Add Captions (Writes to the final video path)
+    final_video_full_path = final_output_dir / final_video_filename
     step3_output_path = add_captions_to_video(
         input_video_path=step2_output_path,
-        output_dir_path=output_dir,
-        output_filename=OUTPUT_FILENAME_STEP3_FINAL,
-        transcription_data=transcription_data_for_captions # Pass transcription data
+        output_dir_path=final_output_dir, # Actually writes to final_output_dir / final_video_filename
+        output_filename=final_video_filename,
+        transcription_data=transcription_data_for_captions
     )
 
-    if not step3_output_path:
-        logger.error("Step 3 (Caption Addition) failed. Exiting.")
-        exit(1)
+    if not step3_output_path or not pathlib.Path(step3_output_path).exists():
+        logger.error(f"Step 3 (Caption Addition) failed or final video not found. Exiting.")
+        return None
 
-    logger.info(f"Video assembly pipeline completed. Final output: {step3_output_path}")
+    # Clean up intermediate step files (_temp_step1_base_video.mp4, _temp_step2_fx_video.mp4)
+    for temp_file_path_str in [step1_output_path, step2_output_path]:
+        if temp_file_path_str:
+            temp_file = pathlib.Path(temp_file_path_str)
+            if temp_file.exists():
+                try: temp_file.unlink(); logger.info(f"Cleaned up temporary assembly file: {temp_file}")
+                except Exception as e_clean: logger.warning(f"Could not delete temp file {temp_file}: {e_clean}")
+
+    logger.info(f"===== VIDEO ASSEMBLY PROCESS COMPLETED. Final output: {step3_output_path} ====")
+    return str(step3_output_path)
+
+
+if __name__ == '__main__':
+    # This block is for standalone testing of the assembler if needed.
+    # It requires orchestration_summary_output.json and e2e_transcription_output.json
+    # to exist in the `test_outputs` directory or as specified by DEFAULT_INPUT_SUMMARY/TRANSCRIPTION_PATH.
+
+    logger.info("Running video_assembler.py directly for testing purposes.")
+
+    # Load config to get FPS and Dims for standalone run
+    cfg_main = load_assembly_config() # This is already defined at module level, but good to be explicit for __main__
+    main_target_fps = cfg_main.get("video_general", {}).get("TARGET_FPS", 30)
+    main_target_dims = tuple(cfg_main.get("video_general", {}).get("TARGET_DIMENSIONS", [1080, 1920]))
+    if len(main_target_dims) != 2: main_target_dims = (1080, 1920)
+
+    # Define input file paths for standalone test (these should exist)
+    # Using the DEFAULT_ constants defined at the top of the file
+    test_orchestration_summary = DEFAULT_INPUT_SUMMARY
+    test_transcription_file = DEFAULT_TRANSCRIPTION_PATH
+
+    # Define output for standalone test
+    standalone_output_dir = PROJECT_ROOT / "video_outputs" / "assembler_standalone_test"
+    standalone_output_dir.mkdir(parents=True, exist_ok=True)
+    standalone_final_filename = "standalone_assembled_video.mp4"
+
+    if not test_orchestration_summary.exists():
+        logger.error(f"TESTING ABORTED: Orchestration summary not found at {test_orchestration_summary}")
+        sys.exit(1)
+    if not test_transcription_file.exists():
+        logger.error(f"TESTING ABORTED: Transcription file not found at {test_transcription_file}")
+        sys.exit(1)
+
+    logger.info(f"Using Orchestration Summary: {test_orchestration_summary}")
+    logger.info(f"Using Transcription File: {test_transcription_file}")
+    logger.info(f"Outputting to: {standalone_output_dir / standalone_final_filename}")
+
+    final_video = assemble_final_video(
+        orchestration_summary_path_str=str(test_orchestration_summary),
+        transcription_path_str=str(test_transcription_file),
+        final_output_dir=standalone_output_dir,
+        final_video_filename=standalone_final_filename,
+        target_fps=main_target_fps,
+        target_dims=main_target_dims
+    )
+
+    if final_video:
+        logger.info(f"Standalone assembler test successful. Video at: {final_video}")
+    else:
+        logger.error("Standalone assembler test FAILED.")

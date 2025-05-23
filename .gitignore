@@ -57,3 +57,4 @@ backend/assets/argil_workflow/*
 *.mp4
 *.ttf
 test_outputs/
+video_outputs/

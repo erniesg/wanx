@@ -8,11 +8,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Default model, can be overridden in specific functions if needed
-# Using Sonnet 3.5 as it's generally a good balance of capability and cost/speed.
-# Opus is more powerful but significantly more expensive and slower.
-# Haiku is faster and cheaper but less capable for complex reasoning.
-DEFAULT_MODEL = "claude-3-5-sonnet-20240620"
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
 class ClaudeClient:
     def __init__(self, api_key: str = None, model: str = DEFAULT_MODEL):

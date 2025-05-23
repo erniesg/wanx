@@ -6,8 +6,8 @@ from moviepy.video.fx.all import resize, crop
 import logging
 
 # Standard TikTok dimensions (width, height)
-TIKTOK_DIMS = (1080, 1920)
-DEFAULT_FPS = 24 # Default FPS for image-derived clips
+# TIKTOK_DIMS = (1080, 1920) # Will be passed by caller
+# DEFAULT_FPS = 24 # Default FPS for image-derived clips. Will be passed by caller
 
 # Setup logger for this module
 logger = logging.getLogger(__name__)
@@ -23,8 +23,8 @@ TEMP_PROCESSED_CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 def process_image_to_video_clip(
     image_path: str,
     duration: float,
-    target_dims: tuple[int, int] = TIKTOK_DIMS,
-    fps: int = DEFAULT_FPS
+    target_dims: tuple[int, int], # Ensure this is always provided
+    fps: int # Ensure this is always provided
 ) -> CompositeVideoClip | None:
     """
     Loads an image, converts it to a video clip of a specific duration,
@@ -96,8 +96,8 @@ def process_image_to_video_clip(
 def process_video_clip(
     video_path: str,
     scene_duration: float,
-    target_dims: tuple[int, int] = TIKTOK_DIMS,
-    target_fps: int = DEFAULT_FPS
+    target_dims: tuple[int, int], # Ensure this is always provided
+    target_fps: int # Ensure this is always provided
 ) -> VideoFileClip | None:
     """
     Loads a video clip, processes it (duration, "cover" resize, center-crop, FPS),

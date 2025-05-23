@@ -4,11 +4,13 @@ video_general:
 
 llm_scene_planner:
   MODEL_NAME: "claude-sonnet-4-20250514"
-  MAX_SEGMENT_DURATION: 5.0 # seconds, desired max for LLM scenes
+  MAX_SEGMENT_DURATION: 3.0 # seconds, desired max for LLM scenes
   MIN_SEGMENT_DURATION: 1.0 # seconds, desired min for LLM scenes
   PHOTO_SEGMENT_THRESHOLD: 1.5 # seconds, below or equal to this, prefer photo
   MAX_KEYWORDS_PER_SCENE: 4
   AVATAR_SCENE_PREFERENCE: "first_scene_of_hook" # "first_scene_overall", "first_scene_of_each_part"
+  MAX_TOKENS: 8000 # Added: Default max tokens for LLM calls
+  TEMPERATURE: 0.7   # Added: Default temperature for LLM calls
   # STOCK_SOURCES: ["pexels", "pixabay"] # Not directly used by LLM prompt, but for context
   # STOCK_SELECTION_STRATEGY: "random_source_first_match" # Not directly used by LLM prompt
 
@@ -24,6 +26,6 @@ tts_settings:
 
 # Paths - relative to workspace root for consistency in tests
 paths:
-  test_script_md: "public/script.md"
-  test_audio_output_dir: "public/test_outputs" # For generated TTS audio
+  test_story_md: "public/byd.md"
+  test_output_base_dir: "test_outputs" # Base directory for all test outputs for this flow
   # font_path: "backend/assets/fonts/YourFont.ttf" # If tests need specific fonts
