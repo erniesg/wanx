@@ -1,3 +1,8 @@
+import warnings
+
+# Suppress specific UserWarning from ffmpeg_reader concerning frame reading issues
+warnings.filterwarnings('ignore', message=".*bytes wanted but 0 bytes read.*", category=UserWarning)
+
 import os
 import json
 import pathlib
@@ -444,17 +449,17 @@ def assemble_video_step1(
             # Resources will be closed in finally block
             return
 
-        logger.info(f"Combining audio and video. Initial video duration: {final_video_loaded.duration:.2f}s, Audio duration: {final_audio_loaded.duration:.2f}s")
+        logger.info(f"Combining audio and video. Initial video duration: {final_video_loaded.duration:.2f}s, Audio duration from temp file: {final_audio_loaded.duration:.2f}s. Target duration (from pre-saved audio calc): {actual_final_audio_duration:.2f}s")
         video_with_audio_intermediate = final_video_loaded.set_audio(final_audio_loaded)
 
         if not video_with_audio_intermediate:
             logger.error("Failed to set audio on video_loaded. Cannot proceed.")
             return # Resources will be closed in finally
 
-        # Explicitly set the duration of the combined clip to the audio's duration.
-        # This is the critical step to ensure audio is the source of truth for length.
-        logger.info(f"Ensuring final clip duration matches audio duration ({final_audio_loaded.duration:.2f}s). Clip current duration: {video_with_audio_intermediate.duration:.2f}s")
-        video_ready_for_render = video_with_audio_intermediate.set_duration(final_audio_loaded.duration)
+        # Explicitly set the duration of the combined clip to actual_final_audio_duration
+        # (calculated in Step 1A before writing temp audio) to ensure it's the source of truth.
+        logger.info(f"Ensuring final clip duration matches pre-calculated audio duration ({actual_final_audio_duration:.2f}s). Clip current duration after set_audio: {video_with_audio_intermediate.duration:.2f}s")
+        video_ready_for_render = video_with_audio_intermediate.set_duration(actual_final_audio_duration)
 
         # Ensure FPS is set for the final render
         output_fps_final = video_ready_for_render.fps if hasattr(video_ready_for_render, 'fps') and video_ready_for_render.fps else DEFAULT_TARGET_FPS_ASSEMBLY
@@ -467,7 +472,7 @@ def assemble_video_step1(
             return # Resources will be closed in finally
 
         total_frames_final = int(video_ready_for_render.duration * output_fps_final)
-        logger.info(f"Writing final combined video to: {final_output_path} (Final Duration: {video_ready_for_render.duration:.2f}s (set to audio's), FPS: {output_fps_final}, Total Frames: {total_frames_final})")
+        logger.info(f"Writing final combined video to: {final_output_path} (Final Duration: {video_ready_for_render.duration:.2f}s (set to pre-calc audio), FPS: {output_fps_final}, Total Frames: {total_frames_final})")
 
         video_ready_for_render.write_videofile(
             str(final_output_path),
@@ -500,17 +505,6 @@ def assemble_video_step1(
         # DO NOT delete temp_final_audio_path and temp_final_visual_path for inspection
         logger.info(f"Temporary audio file kept for inspection: {temp_final_audio_path}")
         logger.info(f"Temporary visual file kept for inspection: {temp_final_visual_path}")
-
-        # # Attempt to remove the temporary directory if it's empty (other than our specific files)
-        # try:
-        #     # Check if temp_dir only contains our two kept files or is empty
-        #     items_in_temp_dir = list(temp_dir.iterdir())
-        #     if len(items_in_temp_dir) <= 2: # Or just check if it's empty if we move them
-        #          # For now, let's not remove the directory itself to avoid complexity if other temp files are there.
-        #          # If we want to be stricter, we'd list contents and only remove if empty *after* moving our files, or if only our files exist.
-        #          pass
-        # except Exception as e_clean_dir:
-        #     logger.warning(f"Error during final cleanup of temporary directory (or check): {e_clean_dir}")
 
 
 if __name__ == '__main__':
