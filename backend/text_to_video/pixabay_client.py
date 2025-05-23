@@ -178,7 +178,10 @@ def find_and_download_pixabay_images(api_key: str, query: str, count: int, outpu
     Returns:
         list[str]: A list of file paths for the downloaded images. Returns empty list on failure.
     """
-    search_params = PixabayImageSearchParams(key=api_key, q=query, per_page=min(count * 2, 200), **kwargs) # Fetch more for randomness
+    # Ensure per_page is at least 3, as per API requirements, even if count is small
+    # Fetch more for randomness, up to API max (200)
+    per_page_val = max(3, min(count * 2, 200))
+    search_params = PixabayImageSearchParams(key=api_key, q=query, per_page=per_page_val, **kwargs)
     image_response = search_pixabay_images(api_key, search_params)
     downloaded_files = []
 

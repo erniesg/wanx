@@ -3,6 +3,7 @@ import json
 import logging
 import pathlib
 import uuid
+import random
 from dotenv import load_dotenv
 
 # Project-level imports
@@ -16,7 +17,14 @@ from backend.text_to_video.argil_client import (
     DEFAULT_VOICE_ID as DEFAULT_ARGIL_VOICE_ID,
     DEFAULT_GESTURE_SLUGS
 )
-from backend.text_to_video.pexels_client import find_and_download_videos, find_and_download_photos
+from backend.text_to_video.pexels_client import find_and_download_videos as find_pexels_videos, find_and_download_photos as find_pexels_photos
+# Import Pixabay client and its search parameter models
+from backend.text_to_video.pixabay_client import (
+    find_and_download_pixabay_videos,
+    find_and_download_pixabay_images,
+    # PixabayImageSearchParams, # Not strictly needed here if passing kwargs directly
+    # PixabayVideoSearchParams  # Not strictly needed here if passing kwargs directly
+)
 
 # Configure basic logging
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper(), format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -38,6 +46,7 @@ ARGIL_API_KEY = os.getenv("ARGIL_API_KEY")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY") # Added Pixabay API Key
 
 # --- Main Orchestration Function ---
 def orchestrate_video_assets():
@@ -73,14 +82,16 @@ def orchestrate_video_assets():
     music_vibe = original_script_data.get("production_notes", {}).get("music_vibe")
     downloaded_music_path = None
     if music_vibe and FREESOUND_API_KEY:
-        logger.info(f"Attempting to download background music with vibe: {music_vibe}")
+        # If music_vibe contains commas, use only the part before the first comma
+        actual_music_query = music_vibe.split(',')[0].strip()
+        logger.info(f"Attempting to download background music. Original vibe: '{music_vibe}', Using query: '{actual_music_query}'")
         music_output_filename = "background_music.mp3"
         music_output_path = TEST_OUTPUT_DIR / music_output_filename
-        downloaded_music_path = find_and_download_music(FREESOUND_API_KEY, music_vibe, str(music_output_path))
+        downloaded_music_path = find_and_download_music(FREESOUND_API_KEY, actual_music_query, str(music_output_path))
         if downloaded_music_path:
             logger.info(f"Background music downloaded to: {downloaded_music_path}")
         else:
-            logger.warning(f"Failed to download background music for vibe: {music_vibe}")
+            logger.warning(f"Failed to download background music for query: {actual_music_query}")
     elif not music_vibe:
         logger.info("No music_vibe specified in script. Skipping background music.")
     elif not FREESOUND_API_KEY:
@@ -163,23 +174,32 @@ def orchestrate_video_assets():
             selected_gesture = DEFAULT_GESTURE_SLUGS[0] if DEFAULT_GESTURE_SLUGS else "gesture-1" # Fallback if list is empty
             logger.info(f"Assigning gesture '{selected_gesture}' to Argil moment for scene {scene_id}.")
 
-            argil_moments = [
-                {
-                    "transcript": text_for_scene,
-                    "avatarId": DEFAULT_ARGIL_AVATAR_ID, # Or make configurable per scene plan
-                    "voiceId": DEFAULT_ARGIL_VOICE_ID,   # This voiceId is for Argil's TTS if audioUrl is NOT used or fails.
-                                                        # Since we provide audioUrl, Argil's voiceId choice here is less critical.
-                    "audioUrl": audio_s3_url,
-                    "gestureSlug": selected_gesture
-                }
-            ]
+            # Construct the moment. If audio_s3_url is present, Argil prefers that and transcript becomes optional or even problematic if present.
+            # voiceId should also be omitted if audioUrl is used, to prevent permission issues with Argil voices.
+            moment_details = {
+                "avatarId": DEFAULT_ARGIL_AVATAR_ID, # Or make configurable per scene plan
+                "gestureSlug": selected_gesture
+            }
+            if audio_s3_url:
+                moment_details["audioUrl"] = audio_s3_url
+                # Do NOT add transcript if audioUrl is provided, per Argil's requirement.
+                # Do NOT add voiceId if audioUrl is provided.
+                if "transcript" in scene_plan_item: # Remove if present, though ideally not added
+                    del scene_plan_item["transcript"]
+            else:
+                # This case should ideally not happen if we always generate and upload audio for AVATAR scenes.
+                # If it does, we fall back to using the text_for_scene for Argil's TTS.
+                moment_details["transcript"] = text_for_scene if text_for_scene else " " # Default to space if no text
+                moment_details["voiceId"] = DEFAULT_ARGIL_VOICE_ID # Only add voiceId if no audioUrl
 
-            logger.info(f"Creating Argil video job for {scene_id} with title '{argil_job_title}' and audioUrl: {audio_s3_url}")
+            argil_moments_payload = [moment_details]
+
+            logger.info(f"Creating Argil video job for {scene_id} with title '{argil_job_title}' and using {'audioUrl' if audio_s3_url else 'transcript with voiceId'}.")
             creation_response = create_argil_video_job(
                 api_key=ARGIL_API_KEY,
                 video_title=argil_job_title,
                 full_transcript=text_for_scene, # Main transcript for the job, moments override with audioUrl
-                moments_payload=argil_moments, # Pass the constructed moments directly
+                moments_payload=argil_moments_payload, # Pass the constructed moments directly
                 avatar_id=DEFAULT_ARGIL_AVATAR_ID, # Default avatar for overall job if moments don't specify
                 voice_id=DEFAULT_ARGIL_VOICE_ID,   # Default voice for overall job if moments don't specify
                 aspect_ratio="9:16",
@@ -206,52 +226,99 @@ def orchestrate_video_assets():
             logger.info(f"AVATAR scene {scene_id} processing initiated with Argil.")
 
         elif visual_type == "STOCK_VIDEO":
-            if not PEXELS_API_KEY:
-                logger.warning(f"PEXELS_API_KEY not set. Skipping STOCK_VIDEO scene {scene_id}.")
-                continue
             if not visual_keywords:
-                logger.warning(f"No visual keywords for STOCK_VIDEO scene {scene_id}. Skipping Pexels search.")
+                logger.warning(f"No visual keywords for STOCK_VIDEO scene {scene_id}. Skipping stock media search.")
                 continue
 
             query = visual_keywords[0]
-            logger.info(f"Searching Pexels for STOCK_VIDEO for scene {scene_id} with query: '{query}'")
+            downloaded_video_paths = []
+            provider_choice = "pexels" # Default
 
-            downloaded_video_paths = find_and_download_videos(
-                api_key=PEXELS_API_KEY,
-                query=query,
-                count=1,
-                output_dir=str(stock_video_output_dir),
-                orientation="portrait"
-            )
+            # Randomly choose between Pexels and Pixabay if both keys are available
+            available_providers = []
+            if PEXELS_API_KEY: available_providers.append("pexels")
+            if PIXABAY_API_KEY: available_providers.append("pixabay")
+
+            if not available_providers:
+                logger.warning(f"No API key found for Pexels or Pixabay. Skipping STOCK_VIDEO scene {scene_id}.")
+                continue
+
+            provider_choice = random.choice(available_providers)
+            logger.info(f"Chosen provider for STOCK_VIDEO scene {scene_id}: {provider_choice}")
+
+            if provider_choice == "pexels":
+                logger.info(f"Searching Pexels for STOCK_VIDEO for scene {scene_id} with query: '{query}'")
+                downloaded_video_paths = find_pexels_videos(
+                    api_key=PEXELS_API_KEY,
+                    query=query,
+                    count=1,
+                    output_dir=str(stock_video_output_dir),
+                    orientation="portrait"
+                )
+            elif provider_choice == "pixabay":
+                logger.info(f"Searching Pixabay for STOCK_VIDEO for scene {scene_id} with query: '{query}'")
+                # Pixabay client uses kwargs for search params like orientation
+                downloaded_video_paths = find_and_download_pixabay_videos(
+                    api_key=PIXABAY_API_KEY,
+                    query=query,
+                    count=1,
+                    output_dir=str(stock_video_output_dir),
+                    orientation="vertical" # Pixabay uses 'vertical', 'horizontal', 'all' for orientation
+                )
+
             if downloaded_video_paths and len(downloaded_video_paths) > 0:
-                logger.info(f"STOCK_VIDEO for scene {scene_id} notionally 'downloaded' from Pexels: {downloaded_video_paths[0]}")
+                logger.info(f"STOCK_VIDEO for scene {scene_id} 'downloaded' from {provider_choice}: {downloaded_video_paths[0]}")
                 scene_plan_item["video_asset_path"] = str(pathlib.Path(downloaded_video_paths[0]))
+                scene_plan_item["stock_media_provider"] = provider_choice
             else:
-                logger.warning(f"Failed to download STOCK_VIDEO from Pexels for scene {scene_id} with query '{query}'.")
+                logger.warning(f"Failed to download STOCK_VIDEO from {provider_choice} for scene {scene_id} with query '{query}'.")
 
         elif visual_type == "STOCK_IMAGE":
-            if not PEXELS_API_KEY:
-                logger.warning(f"PEXELS_API_KEY not set. Skipping STOCK_IMAGE scene {scene_id}.")
-                continue
             if not visual_keywords:
-                logger.warning(f"No visual keywords for STOCK_IMAGE scene {scene_id}. Skipping Pexels search.")
+                logger.warning(f"No visual keywords for STOCK_IMAGE scene {scene_id}. Skipping stock media search.")
                 continue
 
             query = visual_keywords[0]
-            logger.info(f"Searching Pexels for STOCK_IMAGE for scene {scene_id} with query: '{query}'")
+            downloaded_image_paths = []
+            provider_choice = "pexels" # Default
 
-            downloaded_image_paths = find_and_download_photos(
-                api_key=PEXELS_API_KEY,
-                query=query,
-                count=1,
-                output_dir=str(stock_image_output_dir),
-                orientation="portrait"
-            )
+            available_providers = []
+            if PEXELS_API_KEY: available_providers.append("pexels")
+            if PIXABAY_API_KEY: available_providers.append("pixabay")
+
+            if not available_providers:
+                logger.warning(f"No API key found for Pexels or Pixabay. Skipping STOCK_IMAGE scene {scene_id}.")
+                continue
+
+            provider_choice = random.choice(available_providers)
+            logger.info(f"Chosen provider for STOCK_IMAGE scene {scene_id}: {provider_choice}")
+
+            if provider_choice == "pexels":
+                logger.info(f"Searching Pexels for STOCK_IMAGE for scene {scene_id} with query: '{query}'")
+                downloaded_image_paths = find_pexels_photos(
+                    api_key=PEXELS_API_KEY,
+                    query=query,
+                    count=1,
+                    output_dir=str(stock_image_output_dir),
+                    orientation="portrait"
+                )
+            elif provider_choice == "pixabay":
+                logger.info(f"Searching Pixabay for STOCK_IMAGE for scene {scene_id} with query: '{query}'")
+                # Pixabay client uses kwargs for search params like orientation
+                downloaded_image_paths = find_and_download_pixabay_images(
+                    api_key=PIXABAY_API_KEY,
+                    query=query,
+                    count=1,
+                    output_dir=str(stock_image_output_dir),
+                    orientation="vertical" # Pixabay uses 'vertical', 'horizontal', 'all' for orientation
+                )
+
             if downloaded_image_paths and len(downloaded_image_paths) > 0:
-                logger.info(f"STOCK_IMAGE for scene {scene_id} notionally 'downloaded' from Pexels: {downloaded_image_paths[0]}")
+                logger.info(f"STOCK_IMAGE for scene {scene_id} 'downloaded' from {provider_choice}: {downloaded_image_paths[0]}")
                 scene_plan_item["image_asset_path"] = str(pathlib.Path(downloaded_image_paths[0]))
+                scene_plan_item["stock_media_provider"] = provider_choice
             else:
-                logger.warning(f"Failed to download STOCK_IMAGE from Pexels for scene {scene_id} with query '{query}'.")
+                logger.warning(f"Failed to download STOCK_IMAGE from {provider_choice} for scene {scene_id} with query '{query}'.")
 
         else:
             logger.warning(f"Unknown visual_type '{visual_type}' for scene {scene_id}. Skipping.")

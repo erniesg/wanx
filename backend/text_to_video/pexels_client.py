@@ -3,6 +3,7 @@ import requests
 import logging
 from dotenv import load_dotenv
 import random
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -65,6 +66,7 @@ def find_and_download_videos(api_key: str, query: str, count: int, output_dir: s
             download_link = None
             preferred_qualities = ["hd", "sd"] # Pexels API uses 'hd', 'sd', etc. not 'medium'/'small' directly in files
 
+            # First pass: try preferred qualities
             for quality in preferred_qualities:
                 for vf in video_files:
                     if vf.get("quality") == quality and vf.get("file_type") == "video/mp4":
@@ -74,8 +76,34 @@ def find_and_download_videos(api_key: str, query: str, count: int, output_dir: s
                 if download_link:
                     break
 
+            # Second pass (if no preferred quality found): try any mp4 link, prioritizing those with null quality (often good quality)
             if not download_link:
-                logger.warning(f"Could not find a suitable MP4 download link (quality hd/sd) for video ID {video_id}. Skipping.")
+                logger.info(f"No preferred quality (hd/sd) found for video ID {video_id}. Checking for any MP4 with null or other quality.")
+                # Prioritize files where quality is null, as they are often the best available if not explicitly tagged hd/sd
+                null_quality_files = [vf for vf in video_files if vf.get("file_type") == "video/mp4" and vf.get("quality") is None and vf.get("link")]
+                if null_quality_files:
+                    download_link = null_quality_files[0].get("link") # Take the first one
+                    logger.info(f"Selected MP4 with 'null' quality for video ID {video_id} (often good quality). Link: {download_link}")
+                else:
+                    # If no null quality, take the first available MP4 link regardless of listed quality tag
+                    any_mp4_files = [vf for vf in video_files if vf.get("file_type") == "video/mp4" and vf.get("link")]
+                    if any_mp4_files:
+                        download_link = any_mp4_files[0].get("link")
+                        actual_quality_tag = any_mp4_files[0].get("quality", "unknown")
+                        logger.info(f"Selected first available MP4 for video ID {video_id} (quality tag: '{actual_quality_tag}'). Link: {download_link}")
+
+            if not download_link:
+                logger.warning(f"Could not find any suitable MP4 download link for video ID {video_id}. Skipping.")
+                # Log more details about the video object from Pexels API response
+                video_details_for_log = {
+                    "id": video_info.get("id"),
+                    "url": video_info.get("url"),
+                    "width": video_info.get("width"),
+                    "height": video_info.get("height"),
+                    "duration": video_info.get("duration"),
+                    "video_files_summary": [{ "quality": vf.get("quality"), "file_type": vf.get("file_type"), "link_present": bool(vf.get("link"))} for vf in video_files]
+                }
+                logger.info(f"Details of skipped Pexels video ID {video_id}: {json.dumps(video_details_for_log)}")
                 continue
 
             # Construct a safe filename
@@ -183,6 +211,14 @@ def find_and_download_photos(api_key: str, query: str, count: int, output_dir: s
 
             if not download_link:
                 logger.warning(f"Could not find a suitable download link (large/original/medium) for photo ID {photo_id}. Skipping.")
+                # Log more details about the photo object from Pexels API response
+                photo_details_for_log = {
+                    "id": photo_info.get("id"),
+                    "url": photo_info.get("url"),
+                    "photographer": photo_info.get("photographer"),
+                    "src_summary": [{k: bool(v)} for k,v in photo_src.items()]
+                }
+                logger.info(f"Details of skipped Pexels photo ID {photo_id}: {json.dumps(photo_details_for_log)}")
                 continue
 
             # Determine file extension from the download link or default to .jpg

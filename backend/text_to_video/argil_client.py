@@ -120,15 +120,30 @@ def create_argil_video_job(
         for idx, moment_data in enumerate(moments_payload):
             # Ensure essential fields are present, falling back to job defaults
             # Transcript is expected to be in moment_data if it's from orchestrator
-            if "transcript" not in moment_data or not moment_data["transcript"]:
-                 logger.warning(f"Moment {idx} in provided payload is missing 'transcript'. This might be okay if audioUrl is primary.")
-                 # Argil might require a transcript, even if short, when audioUrl is used.
-                 # Sending a space or the scene text as done by orchestrator.
-                 moment_data["transcript"] = moment_data.get("transcript", " ")
-
+            if "audioUrl" not in moment_data or not moment_data.get("audioUrl"):
+                # Only add/ensure transcript if there's no audioUrl for this moment
+                if "transcript" not in moment_data or not moment_data["transcript"]:
+                    logger.warning(f"Moment {idx} in provided payload is missing 'transcript' AND 'audioUrl'. Setting transcript to a space.")
+                    moment_data["transcript"] = " " # Default to space if both are missing to avoid Argil error for no content
+                else:
+                    logger.info(f"Moment {idx} includes transcript: '{moment_data['transcript'][:30]}...'")
+            elif "transcript" in moment_data:
+                # If audioUrl is present AND transcript is also somehow present, log it but Argil will likely error.
+                # The orchestrator should prevent this, but this is a client-side check.
+                logger.warning(f"Moment {idx} has BOTH audioUrl and transcript. Orchestrator should ensure only one. Transcript: '{moment_data['transcript'][:30]}...'")
 
             moment_data["avatarId"] = moment_data.get("avatarId", avatar_id) # Use moment's, else job's
-            moment_data["voiceId"] = moment_data.get("voiceId", voice_id)   # Use moment's, else job's
+
+            # Handle voiceId carefully: only add job-level voice_id if no audioUrl is present AND moment doesn't already have a voiceId.
+            if "audioUrl" not in moment_data or not moment_data.get("audioUrl"):
+                if "voiceId" not in moment_data or not moment_data.get("voiceId"):
+                    moment_data["voiceId"] = voice_id # Assign job-level voice_id
+                    logger.debug(f"Moment {idx} has no audioUrl and no specific voiceId, assigned job-level voiceId: {voice_id}")
+            elif "voiceId" in moment_data:
+                # If audioUrl is present AND voiceId is also in moment_data (e.g. from orchestrator), remove the voiceId.
+                # The orchestrator should ideally not send it, but this is a safeguard.
+                logger.warning(f"Moment {idx} has audioUrl AND voiceId. Removing voiceId '{moment_data['voiceId']}' as audioUrl is present.")
+                del moment_data["voiceId"]
 
             # If gestureSlug is missing in the provided moment, use the first job-level default gesture
             if "gestureSlug" not in moment_data or not moment_data["gestureSlug"]:
@@ -170,6 +185,7 @@ def create_argil_video_job(
         "moments": final_moments_payload,
         "subtitles": {"enable": False},
         "aspectRatio": aspect_ratio,
+        "autoBrolls": {"enable": False, "source": "GENERATION"},
         "extras": {}
     }
     if callback_id:

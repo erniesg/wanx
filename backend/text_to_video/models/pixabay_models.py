@@ -76,6 +76,13 @@ class PixabayVideoFileDetail(BaseModel):
     size: int
     thumbnail: Optional[HttpUrl] = None # Thumbnail seems to be part of specific video size in example, added here for completeness if structure varies.
 
+    @field_validator("thumbnail", mode='before')
+    @classmethod
+    def empty_str_to_none_thumbnail(cls, v):
+        if v == "":
+            return None
+        return v
+
 class PixabayVideoVersions(BaseModel):
     large: Optional[PixabayVideoFileDetail] = None
     medium: PixabayVideoFileDetail
