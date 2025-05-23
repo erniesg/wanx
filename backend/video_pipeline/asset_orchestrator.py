@@ -55,7 +55,7 @@ PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY") # Added Pixabay API Key
 # Argil Polling Configuration
 ARGIL_POLLING_INTERVAL_SECONDS = 30
 ARGIL_MAX_POLLING_ATTEMPTS = 20 # Max attempts (e.g., 20 * 30s = 10 minutes)
-ARGIL_SUCCESS_STATUS = "VIDEO_GENERATION_SUCCESS" # Based on user provided event name
+ARGIL_SUCCESS_STATUS = "DONE" # Updated from "VIDEO_GENERATION_SUCCESS" to match observed Argil API status
 ARGIL_FAILURE_STATUSES = ["VIDEO_GENERATION_FAILED", "ERROR", "FAILED"] # Common failure states
 
 # --- Helper function to download a file from URL ---
