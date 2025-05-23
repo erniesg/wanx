@@ -81,10 +81,11 @@ def text_to_speech(
     output_path = os.path.join(audio_dir, output_filename)
 
     # Initialize ElevenLabs client
+    # The API key is passed during initialization and handled internally by the client.
+    # An explicit check like `if not client.api_key:` is not needed and can cause
+    # an AttributeError with recent versions of the elevenlabs-python SDK.
+    # If the API key is missing or invalid, API calls will fail and should be caught by the try-except block.
     client = ElevenLabs(api_key=os.getenv("ELEVENLABS_API_KEY"))
-    if not client.api_key:
-        logger.error("ELEVENLABS_API_KEY not found in environment variables.")
-        return False
 
     try:
         # Define voice settings using provided parameters

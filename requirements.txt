@@ -7,3 +7,7 @@ pydantic
 # Added for slugifying keywords in URL paths for Envato client
 python-slugify
 openai-whisper
+PyYAML
+python-dotenv
+elevenlabs
+anthropic

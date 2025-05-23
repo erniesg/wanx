@@ -22,30 +22,35 @@ class ClaudeClient:
         self.client = anthropic.Anthropic(api_key=self.api_key)
         self.model = model
 
-    def generate_structured_output(self, system_prompt: str, user_prompt: str, max_tokens: int = 2000, temperature: float = 0.3) -> dict | list | None:
+    def generate_structured_output(self, system_prompt: str, user_prompt: str, max_tokens: int = None, temperature: float = None) -> dict | list | None:
         """
         Sends a prompt to Claude and expects a JSON object or list as a response.
 
         Args:
             system_prompt: The system prompt to guide the AI's behavior and output format.
             user_prompt: The main user query or content to be processed.
-            max_tokens: Maximum number of tokens to generate.
-            temperature: Controls randomness (0.0 to 1.0). Lower is more deterministic.
+            max_tokens: Maximum number of tokens to generate. If None, API default is used.
+            temperature: Controls randomness (0.0 to 1.0). If None, API default is used.
 
         Returns:
             A dictionary or list parsed from Claude's JSON response, or None if an error occurs or parsing fails.
         """
-        logger.info(f"Sending request to Claude model: {self.model} with max_tokens={max_tokens}, temp={temperature}")
+        log_params = {}
+        if max_tokens is not None:
+            log_params["max_tokens"] = max_tokens
+        if temperature is not None:
+            log_params["temperature"] = temperature
+
+        logger.info(f"Sending request to Claude model: {self.model} with params: {log_params if log_params else 'API defaults'}")
         # logger.debug(f"System Prompt:\n{system_prompt}")
         # logger.debug(f"User Prompt:\n{user_prompt}")
 
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                system=system_prompt, # System prompt guides overall behavior and output format
-                messages=[
+            # Construct the API call parameters, only including max_tokens and temperature if they are not None
+            api_call_args = {
+                "model": self.model,
+                "system": system_prompt,
+                "messages": [
                     {
                         "role": "user",
                         "content": [
@@ -56,7 +61,13 @@ class ClaudeClient:
                         ]
                     }
                 ]
-            )
+            }
+            if max_tokens is not None:
+                api_call_args["max_tokens"] = max_tokens
+            if temperature is not None:
+                api_call_args["temperature"] = temperature
+
+            response = self.client.messages.create(**api_call_args)
 
             # Ensure there is content and it's a TextBlock
             if response.content and isinstance(response.content[0], anthropic.types.TextBlock):
