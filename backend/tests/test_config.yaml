@@ -1,0 +1,29 @@
+video_general:
+  TARGET_FPS: 30
+  TARGET_DIMENSIONS: [1080, 1920] # width, height for TikTok
+
+llm_scene_planner:
+  MODEL_NAME: "claude-sonnet-4-20250514"
+  MAX_SEGMENT_DURATION: 5.0 # seconds, desired max for LLM scenes
+  MIN_SEGMENT_DURATION: 1.0 # seconds, desired min for LLM scenes
+  PHOTO_SEGMENT_THRESHOLD: 1.5 # seconds, below or equal to this, prefer photo
+  MAX_KEYWORDS_PER_SCENE: 4
+  AVATAR_SCENE_PREFERENCE: "first_scene_of_hook" # "first_scene_overall", "first_scene_of_each_part"
+  # STOCK_SOURCES: ["pexels", "pixabay"] # Not directly used by LLM prompt, but for context
+  # STOCK_SELECTION_STRATEGY: "random_source_first_match" # Not directly used by LLM prompt
+
+tts_settings:
+  MODEL_ID: "eleven_multilingual_v2"
+  VOICE_ID: "SDNKIYEpTz0h56jQX8rA" # Default from tts.py
+  SPEED: 1.15 # Desired speed for voice generation
+  STABILITY: 0.50
+  SIMILARITY_BOOST: 0.75
+  STYLE: 0.0 # Corresponds to Style Exaggeration 0%
+  USE_SPEAKER_BOOST: True
+  # Add other tts.py specific settings if needed by the test, e.g., speed. For now, defaults are fine.
+
+# Paths - relative to workspace root for consistency in tests
+paths:
+  test_script_md: "public/script.md"
+  test_audio_output_dir: "public/test_outputs" # For generated TTS audio
+  # font_path: "backend/assets/fonts/YourFont.ttf" # If tests need specific fonts
