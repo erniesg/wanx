@@ -7,7 +7,7 @@ import re
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 
-from backend.text_to_video.pixabay_models import (
+from backend.text_to_video.models.pixabay_models import (
     PixabayImageSearchParams, PixabayImageSearchResponse, PixabayImageHit,
     PixabayVideoSearchParams, PixabayVideoSearchResponse, PixabayVideoHit
 )
