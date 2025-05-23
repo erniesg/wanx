@@ -121,14 +121,8 @@ def poll_and_download_argil_videos(scene_plans: list, api_key: str, project_id: 
 
                     if status == ARGIL_SUCCESS_STATUS: # Argil internal success status might be "DONE" or similar
                         # We need to confirm the exact field for the download URL from Argil's get_video_details response
-                        # Common patterns: result.url, videos[0].url, downloadUrl etc.
-                        # Assuming data.result.url for now, based on common API patterns
-                        download_url = job_data.get("result", {}).get("url")
-                        if not download_url and "videos" in job_data and isinstance(job_data["videos"], list) and len(job_data["videos"]) > 0:
-                            # Another common pattern if result.url is not present
-                            download_url = job_data["videos"][0].get("url")
-                        if not download_url: # Last guess from some API patterns
-                            download_url = job_data.get("url")
+                        # The API doc for GET /videos/{id} specifies a 'videoUrl' field directly in the response data.
+                        download_url = job_data.get("videoUrl")
 
                         if download_url:
                             logger.info(f"Argil Video ID: {video_id} (Scene: {scene_id}) - Succeeded. Download URL: {download_url}")
@@ -463,10 +457,18 @@ def orchestrate_video_assets():
     else:
         logger.info("ARGIL_API_KEY not set. Skipping Argil video polling and download phase.")
 
+    # Prepare the comprehensive summary data
+    orchestration_summary_data = {
+        "video_project_id": video_project_id,
+        "master_vo_path": str(MASTER_VOICEOVER_FILE) if MASTER_VOICEOVER_FILE.exists() else None,
+        "background_music_path": str(downloaded_music_path) if downloaded_music_path else None,
+        "scene_plans": scene_plans
+    }
+
     # Save the updated scene_plans with new asset info (including polled status and download paths)
     try:
         with open(ORCHESTRATION_SUMMARY_FILE, 'w') as f:
-            json.dump(scene_plans, f, indent=2)
+            json.dump(orchestration_summary_data, f, indent=2)
         logger.info(f"Orchestration summary saved to: {ORCHESTRATION_SUMMARY_FILE}")
     except Exception as e:
         logger.error(f"Failed to save orchestration summary: {e}")

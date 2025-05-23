@@ -259,8 +259,8 @@ def render_argil_video(api_key: str, video_id: str) -> dict | None:
 
 
 def get_argil_video_details(api_key: str, video_id: str) -> dict | None:
-    """Fetches the status and details of an Argil video."""
-    logger.debug(f"Fetching details for Argil video ID: {video_id}")
+    """Fetches details for a specific Argil video job."""
+    logger.info(f"Fetching details for Argil Video ID: {video_id}")
     if not api_key or not video_id:
         logger.error("API key or Video ID is missing for fetching details.")
         return None
@@ -270,25 +270,25 @@ def get_argil_video_details(api_key: str, video_id: str) -> dict | None:
         response = requests.get(url, headers=_get_headers(api_key), timeout=30)
         response.raise_for_status()
         response_data = response.json()
-        logger.debug(f"Argil video details fetched for Video ID: {video_id}. Status: {response_data.get('status')}")
+        logger.debug(f"Successfully fetched details for Argil Video ID: {video_id}. Response: {response_data}")
         return {"success": True, "data": response_data}
     except requests.exceptions.Timeout:
-        logger.error(f"Argil API request timed out while fetching details for video ID: {video_id}.")
+        logger.error(f"Argil API request timed out while fetching details for ID: {video_id}.")
         return {"success": False, "error": "Request timed out"}
     except requests.exceptions.RequestException as e:
-        logger.error(f"Argil API request failed while fetching details for video ID: {video_id}: {e}")
+        logger.error(f"Argil API request failed while fetching details for ID: {video_id}: {e}")
         error_details = "No response details"
         status_code = None
         if e.response is not None:
             status_code = e.response.status_code
             try:
                 error_details = e.response.json()
-            except ValueError:
+            except ValueError: # Catch if response is not JSON
                 error_details = e.response.text
             logger.error(f"Response status: {status_code}, content: {error_details}")
         return {"success": False, "error": str(e), "status_code": status_code, "details": error_details}
-    except Exception as e:
-        logger.error(f"An unexpected error occurred while fetching Argil video details for ID: {video_id}: {e}")
+    except Exception as e: # Catch any other unexpected errors
+        logger.error(f"An unexpected error occurred while fetching Argil video details: {e}")
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
 
@@ -368,6 +368,83 @@ def create_argil_webhook(api_key: str, callback_url: str, events: list[str]) -> 
     except Exception as e:
         logger.error(f"An unexpected error occurred during Argil webhook creation: {e}")
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
+
+
+def _download_file_from_url_argil(url: str, output_path: str) -> bool:
+    """
+    Downloads a file from a URL to the given output_path.
+    Specific to Argil client, consider moving to a shared utility if used elsewhere.
+    Creates parent directories if they don't exist.
+    """
+    try:
+        # Ensure output_path is a Path object for .parent and .mkdir
+        import pathlib
+        output_path_obj = pathlib.Path(output_path)
+        output_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        with requests.get(url, stream=True, timeout=60) as r: # Added timeout
+            r.raise_for_status()
+            with open(output_path_obj, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        logger.info(f"Successfully downloaded file from {url} to {output_path}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error downloading file from {url}: {e}")
+    except IOError as e: # More specific exception for file I/O
+        logger.error(f"IOError saving file to {output_path}: {e}")
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during download from {url} to {output_path}: {e}")
+    return False
+
+def get_and_download_argil_video_if_ready(
+    api_key: str,
+    video_id: str,
+    output_dir: str,
+    project_id: str, # Used for filename uniqueness
+    scene_id: str    # Used for filename uniqueness
+) -> str | None:
+    """
+    Checks if an Argil video is ready (status 'DONE') and downloads it.
+    Returns the path to the downloaded video if successful, otherwise None.
+    """
+    logger.info(f"Checking status and attempting download for Argil Video ID: {video_id} (Scene: {scene_id})")
+    details_response = get_argil_video_details(api_key, video_id)
+
+    if not details_response or not details_response.get("success"):
+        logger.error(f"Failed to get details for Argil Video ID: {video_id}. Cannot proceed with download check.")
+        return None
+
+    job_data = details_response.get("data", {})
+    status = job_data.get("status")
+    video_url = job_data.get("videoUrl") # As per API doc for GET /videos/{id}
+
+    logger.info(f"Argil Video ID: {video_id} (Scene: {scene_id}) - Current Status: {status}, Video URL: {video_url}")
+
+    if status == "DONE": # Check against the "DONE" status
+        if video_url:
+            import pathlib # Ensure pathlib is available
+            avatar_filename = f"{project_id}_{scene_id}_avatar_ondemand.mp4"
+            output_path = pathlib.Path(output_dir) / avatar_filename
+            # Create the directory if it doesn't exist, using the shared RENDERED_AVATARS_DIR might be better.
+            # For now, using the passed output_dir.
+            pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+            logger.info(f"Video {video_id} is DONE. Attempting download from {video_url} to {output_path}")
+            if _download_file_from_url_argil(video_url, str(output_path)):
+                logger.info(f"Successfully downloaded Argil video {video_id} to {output_path}")
+                return str(output_path)
+            else:
+                logger.error(f"Failed to download Argil video {video_id} from {video_url}")
+                return None
+        else:
+            logger.error(f"Argil Video ID: {video_id} is DONE but no videoUrl found. Data: {job_data}")
+            return None
+    elif status in ["FAILED", "VIDEO_GENERATION_FAILED", "ERROR"]: # Explicitly check for failure states
+        logger.error(f"Argil Video ID: {video_id} (Scene: {scene_id}) has failed with status: {status}. Cannot download.")
+        return None
+    else: # Any other status (GENERATING_VIDEO, etc.)
+        logger.info(f"Argil Video ID: {video_id} (Scene: {scene_id}) is not yet DONE. Status: {status}. Download will not be attempted.")
+        return None
 
 
 if __name__ == "__main__":
