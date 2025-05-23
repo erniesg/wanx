@@ -4,7 +4,9 @@ import logging
 import pathlib
 import uuid
 import random
+import time # Added for polling
 from dotenv import load_dotenv
+import requests # Added for downloading rendered video
 
 # Project-level imports
 from backend.text_to_video.freesound_client import find_and_download_music
@@ -13,6 +15,7 @@ from backend.text_to_video.s3_client import get_s3_client, ensure_s3_bucket, upl
 from backend.text_to_video.argil_client import (
     create_argil_video_job,
     render_argil_video,
+    get_argil_video_details, # Added for polling
     DEFAULT_AVATAR_ID as DEFAULT_ARGIL_AVATAR_ID,
     DEFAULT_VOICE_ID as DEFAULT_ARGIL_VOICE_ID,
     DEFAULT_GESTURE_SLUGS
@@ -40,6 +43,7 @@ SCENE_PLAN_FILE = TEST_OUTPUT_DIR / "e2e_llm_scene_plan_output.json"
 MASTER_VOICEOVER_FILE = TEST_OUTPUT_DIR / "How_Tencent_Bought_Its_Way_Into_AI_s_Top_8_master_vo.mp3" # Example name
 ORIGINAL_SCRIPT_FILE = PROJECT_ROOT / "public" / "script.md"
 ORCHESTRATION_SUMMARY_FILE = TEST_OUTPUT_DIR / "orchestration_summary_output.json"
+RENDERED_AVATARS_DIR = TEST_OUTPUT_DIR / "rendered_avatars" # Added for downloaded avatars
 
 FREESOUND_API_KEY = os.getenv("FREESOUND_API_KEY")
 ARGIL_API_KEY = os.getenv("ARGIL_API_KEY")
@@ -47,6 +51,133 @@ S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY") # Added Pixabay API Key
+
+# Argil Polling Configuration
+ARGIL_POLLING_INTERVAL_SECONDS = 30
+ARGIL_MAX_POLLING_ATTEMPTS = 20 # Max attempts (e.g., 20 * 30s = 10 minutes)
+ARGIL_SUCCESS_STATUS = "VIDEO_GENERATION_SUCCESS" # Based on user provided event name
+ARGIL_FAILURE_STATUSES = ["VIDEO_GENERATION_FAILED", "ERROR", "FAILED"] # Common failure states
+
+# --- Helper function to download a file from URL ---
+def _download_file_from_url(url: str, output_path: pathlib.Path) -> bool:
+    """Downloads a file from a URL to the given output_path."""
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(output_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        logger.info(f"Successfully downloaded file from {url} to {output_path}")
+        return True
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error downloading file from {url}: {e}")
+    except IOError as e:
+        logger.error(f"IOError saving file to {output_path}: {e}")
+    return False
+
+# --- Argil Polling and Downloading Function ---
+def poll_and_download_argil_videos(scene_plans: list, api_key: str, project_id: str) -> list:
+    """
+    Polls Argil for video job completion and downloads successful videos.
+    Updates scene_plans in place with status and download paths.
+    """
+    if not api_key:
+        logger.warning("ARGIL_API_KEY not provided. Skipping Argil polling and download.")
+        return scene_plans
+
+    os.makedirs(RENDERED_AVATARS_DIR, exist_ok=True)
+    logger.info(f"Starting Argil polling for {len(scene_plans)} scenes. Output dir: {RENDERED_AVATARS_DIR}")
+
+    all_jobs_finalized = True # Track if all jobs reach a final state
+
+    for scene_plan_item in scene_plans:
+        if scene_plan_item.get("visual_type") == "AVATAR" and "argil_video_id" in scene_plan_item:
+            video_id = scene_plan_item["argil_video_id"]
+            scene_id = scene_plan_item.get("scene_id", "unknown_scene")
+            current_status = scene_plan_item.get("argil_render_status", "UNKNOWN")
+
+            # Skip if already in a final success (downloaded) or hard failure state
+            if current_status == ARGIL_SUCCESS_STATUS and "avatar_video_path" in scene_plan_item:
+                logger.info(f"Scene {scene_id} (Argil ID: {video_id}) already processed and downloaded. Skipping poll.")
+                continue
+            if current_status in ARGIL_FAILURE_STATUSES or current_status == "polling_timed_out":
+                logger.info(f"Scene {scene_id} (Argil ID: {video_id}) already in a final failure state: {current_status}. Skipping poll.")
+                all_jobs_finalized = all_jobs_finalized and True # Still considered final
+                continue
+
+            logger.info(f"Polling for AVATAR scene {scene_id}, Argil Video ID: {video_id}, Current Status: {current_status}")
+            all_jobs_finalized = False # At least one job needs polling
+
+            for attempt in range(ARGIL_MAX_POLLING_ATTEMPTS):
+                logger.debug(f"Polling attempt {attempt + 1}/{ARGIL_MAX_POLLING_ATTEMPTS} for Argil Video ID: {video_id}")
+                details_response = get_argil_video_details(api_key, video_id)
+
+                if details_response and details_response.get("success"):
+                    job_data = details_response.get("data", {})
+                    status = job_data.get("status") # This is Argil's internal status string for the video job
+                    scene_plan_item["argil_render_status"] = status # Update with the latest status
+                    logger.info(f"Argil Video ID: {video_id} (Scene: {scene_id}) - Status: {status}")
+
+                    if status == ARGIL_SUCCESS_STATUS: # Argil internal success status might be "DONE" or similar
+                        # We need to confirm the exact field for the download URL from Argil's get_video_details response
+                        # Common patterns: result.url, videos[0].url, downloadUrl etc.
+                        # Assuming data.result.url for now, based on common API patterns
+                        download_url = job_data.get("result", {}).get("url")
+                        if not download_url and "videos" in job_data and isinstance(job_data["videos"], list) and len(job_data["videos"]) > 0:
+                            # Another common pattern if result.url is not present
+                            download_url = job_data["videos"][0].get("url")
+                        if not download_url: # Last guess from some API patterns
+                            download_url = job_data.get("url")
+
+                        if download_url:
+                            logger.info(f"Argil Video ID: {video_id} (Scene: {scene_id}) - Succeeded. Download URL: {download_url}")
+                            avatar_filename = f"{project_id}_{scene_id}_avatar.mp4"
+                            avatar_output_path = RENDERED_AVATARS_DIR / avatar_filename
+                            if _download_file_from_url(download_url, avatar_output_path):
+                                scene_plan_item["avatar_video_path"] = str(avatar_output_path)
+                                logger.info(f"Successfully downloaded rendered avatar for Scene {scene_id} to {avatar_output_path}")
+                            else:
+                                scene_plan_item["argil_render_status"] = "download_failed"
+                                logger.error(f"Failed to download rendered avatar for Scene {scene_id} from {download_url}")
+                        else:
+                            scene_plan_item["argil_render_status"] = "success_no_url"
+                            logger.error(f"Argil Video ID: {video_id} (Scene: {scene_id}) - Succeeded but no download URL found in response: {job_data}")
+                        all_jobs_finalized = True # This job is now final
+                        break  # Exit polling loop for this scene
+
+                    elif status in ARGIL_FAILURE_STATUSES:
+                        logger.error(f"Argil Video ID: {video_id} (Scene: {scene_id}) - Failed with status: {status}. Details: {job_data.get('error')}")
+                        all_jobs_finalized = True # This job is now final
+                        break  # Exit polling loop for this scene
+                    else: # Still pending
+                        logger.info(f"Argil Video ID: {video_id} (Scene: {scene_id}) - Status {status} is pending. Waiting {ARGIL_POLLING_INTERVAL_SECONDS}s...")
+                        time.sleep(ARGIL_POLLING_INTERVAL_SECONDS)
+                else:
+                    logger.warning(f"Failed to get details for Argil Video ID: {video_id} (Scene: {scene_id}) on attempt {attempt + 1}. Response: {details_response}")
+                    # Decide if we should retry or give up on API error for get_details
+                    if attempt == ARGIL_MAX_POLLING_ATTEMPTS - 1: # If last attempt also failed to get details
+                        scene_plan_item["argil_render_status"] = "polling_details_failed"
+                        all_jobs_finalized = True # Give up on this job
+                    else:
+                         time.sleep(ARGIL_POLLING_INTERVAL_SECONDS) # Wait before retrying get_details
+
+            else: # Loop finished without break (i.e., max attempts reached for a pending job)
+                if scene_plan_item["argil_render_status"] not in [ARGIL_SUCCESS_STATUS] + ARGIL_FAILURE_STATUSES and \
+                   scene_plan_item["argil_render_status"] not in ["download_failed", "success_no_url", "polling_details_failed"]:
+                    logger.warning(f"Argil Video ID: {video_id} (Scene: {scene_id}) - Polling timed out after {ARGIL_MAX_POLLING_ATTEMPTS} attempts. Last status: {scene_plan_item.get('argil_render_status')}")
+                    scene_plan_item["argil_render_status"] = "polling_timed_out"
+                    all_jobs_finalized = True # This job is now final (due to timeout)
+        elif scene_plan_item.get("visual_type") == "AVATAR" and "argil_video_id" not in scene_plan_item:
+            logger.warning(f"AVATAR Scene {scene_plan_item.get('scene_id', 'unknown_scene')} has no argil_video_id. Skipping polling.")
+            # This scene is effectively final for polling purposes as it can't be polled.
+
+    if all_jobs_finalized:
+        logger.info("Argil polling and download process complete. All pollable jobs have reached a final state or timed out.")
+    else:
+        logger.info("Argil polling and download process iteration complete. Some jobs may still be pending if max global timeout not reached (not implemented here).")
+
+    return scene_plans
 
 # --- Main Orchestration Function ---
 def orchestrate_video_assets():
@@ -323,9 +454,16 @@ def orchestrate_video_assets():
         else:
             logger.warning(f"Unknown visual_type '{visual_type}' for scene {scene_id}. Skipping.")
 
-    logger.info("Initial asset orchestration pass completed. Further steps (polling, assembly) would follow.")
+    logger.info("Initial asset orchestration pass completed.")
 
-    # Save the updated scene_plans with new asset info
+    # --- 4. Poll for Argil Video Completion and Download ---
+    if ARGIL_API_KEY: # Only poll if Argil key is available
+        logger.info("Proceeding to poll Argil for video completions and download.")
+        scene_plans = poll_and_download_argil_videos(scene_plans, ARGIL_API_KEY, video_project_id)
+    else:
+        logger.info("ARGIL_API_KEY not set. Skipping Argil video polling and download phase.")
+
+    # Save the updated scene_plans with new asset info (including polled status and download paths)
     try:
         with open(ORCHESTRATION_SUMMARY_FILE, 'w') as f:
             json.dump(scene_plans, f, indent=2)

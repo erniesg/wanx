@@ -1,6 +1,7 @@
 from pydub import AudioSegment
 import logging
 import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -53,27 +54,22 @@ def slice_audio(input_path: str, output_path: str, start_seconds: float, end_sec
         # Slice the audio
         sliced_audio = audio[start_ms:end_ms]
 
-        # Ensure output directory exists
-        output_dir = os.path.dirname(output_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
+        try:
+            # Ensure output directory exists
+            output_path_obj = Path(output_path)
+            output_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-        # Export the sliced audio
-        # Default is mp3, pydub needs ffmpeg for this
-        sliced_audio.export(output_path, format="mp3")
-
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            # Export the sliced audio
+            with open(output_path_obj, 'wb') as f:
+                sliced_audio.export(f, format="mp3")
             logger.info(f"Successfully sliced audio saved to {output_path}")
             return True
-        else:
-            logger.error(f"Failed to save sliced audio or file is empty at {output_path}")
+        except Exception as e:
+            logger.error(f"Error saving sliced audio: {e}")
             return False
 
     except Exception as e:
-        logger.error(f"Error during audio slicing: {e}")
-        # Log ffmpeg/ffprobe related errors if they commonly occur
-        if "ffmpeg" in str(e).lower() or "ffprobe" in str(e).lower():
-            logger.error("This error might be related to ffmpeg/ffprobe not being installed or not found in PATH.")
+        logger.error(f"Error loading audio file {input_path}: {e}")
         return False
 
 if __name__ == '__main__':

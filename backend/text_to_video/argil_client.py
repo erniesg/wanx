@@ -111,7 +111,7 @@ def create_argil_video_job(
         logger.warning("No job-level gesture slugs provided or default, using a single 'gesture-1' for fallback if needed.")
         job_gesture_slugs = ["gesture-1"]
 
-    default_single_gesture = job_gesture_slugs[0]
+    default_single_gesture = job_gesture_slugs[1]
 
     final_moments_payload = []
 
